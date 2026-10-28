@@ -1,0 +1,2 @@
+# Store and check out text files with LF so local checks match CI on Linux.
+* text=auto eol=lf
