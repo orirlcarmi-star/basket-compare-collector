@@ -78,6 +78,8 @@ def collect_cerberus(chain: str, out: Path, limit: int | None) -> int:
     stores_name = max(n for n in names if kind_of(n) in {"stores", "storesfull"})
     full = [n for n in names if kind_of(n) == "pricefull"]
     latest = latest_per_store(fresh_only(full, datetime.now(UTC)))
+    if not latest:  # the file names may follow a pattern we do not know yet
+        print(f"  no fresh price files; {len(names)} files, e.g. {sorted(names)[-5:]}")
     return _write_chain(out / chain, session.download(stores_name), latest, session.download, limit)
 
 
