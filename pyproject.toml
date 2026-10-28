@@ -1,0 +1,28 @@
+[project]
+name = "basket-compare-collector"
+version = "0.1.0"
+description = "Collects Israeli supermarket price-transparency files and turns them into ready-made data files."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.4", "ruff==0.8.4"]
+
+[build-system]
+requires = ["setuptools>=77"]  # 77+ understands the SPDX `license = "MIT"` string
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
