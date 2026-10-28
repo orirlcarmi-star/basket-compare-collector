@@ -66,20 +66,6 @@ def list_all(category: int, store_id: int = 0) -> list[FileLink]:
     return links
 
 
-def latest_per_store(links: list[FileLink]) -> dict[str, FileLink]:
-    """Keep the newest file for each store (names end in -<store>-<date>-<time>)."""
-    latest: dict[str, FileLink] = {}
-    for link in links:
-        parts = link.name.split("-")
-        if len(parts) < 5:
-            continue  # not a per-store file (e.g. the stores list)
-        store, stamp = parts[2], parts[3] + parts[4]
-        current = latest.get(store)
-        if current is None or stamp > "".join(current.name.split("-")[3:5]):
-            latest[store] = link
-    return latest
-
-
 def fetch(url: str, timeout: float = 60) -> bytes:
     request = Request(url, headers={"User-Agent": USER_AGENT})
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https hosts only

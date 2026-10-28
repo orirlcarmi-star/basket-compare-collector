@@ -1,0 +1,47 @@
+name: Collect
+
+# Manual for now; the nightly + hourly schedule comes in build step 2.7.
+on:
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "Chain to collect"
+        type: choice
+        options: [shufersal, ramilevi, osherad, yohananof]
+      limit:
+        description: "Stop after N stores (empty = all)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Collect
+        env:
+          CHAIN: ${{ inputs.chain }}
+          LIMIT: ${{ inputs.limit }}
+        run: python -m collector.collect "$CHAIN" --out data ${LIMIT:+--limit "$LIMIT"}
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Collected: $CHAIN"
+            echo
+            echo "| Files | Stores in list | Items in first file |"
+            echo "|---|---|---|"
+            n=$(ls data/*/prices 2>/dev/null | wc -l)
+            s=$(python -c "import json,glob;print(sum(len(json.load(open(f))) for f in glob.glob('data/*/stores.json')))" 2>/dev/null || echo 0)
+            i=$(python -c "import json,glob;f=sorted(glob.glob('data/*/prices/*.json'));print(len(json.load(open(f[0]))['items']) if f else 0)")
+            echo "| $n | $s | $i |"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          CHAIN: ${{ inputs.chain }}

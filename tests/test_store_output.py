@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from collector.collect import _file_date
+from collector.collect import fresh_only
 from collector.model import Audience, FileHeader, PriceFile, PriceItem, Promotion
 from collector.store_output import to_json
 
@@ -29,8 +29,11 @@ def test_rejects_non_dataclasses():
         to_json({"a": 1})
 
 
-def test_file_date_from_name():
-    assert _file_date("PriceFull7290027600007-001-002-20261028-030000") == datetime(
-        2026, 10, 28, tzinfo=UTC
-    )
-    assert _file_date("Stores7290027600007-000") is None
+def test_fresh_only_drops_old_and_unnamed_files():
+    now = datetime(2026, 10, 29, tzinfo=UTC)
+    names = [
+        "PriceFull7290027600007-001-002-20261028-030000",
+        "PriceFull7290027600007-001-003-20260712-030000",
+        "Stores7290027600007-000-20261028-020",
+    ]
+    assert fresh_only(names, now) == ["PriceFull7290027600007-001-002-20261028-030000"]
