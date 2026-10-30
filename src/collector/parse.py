@@ -26,7 +26,6 @@ _ONLINE_STORE = re.compile(r"אינטרנט|אונליין|online", re.IGNORECAS
 _CREDIT_WORDING = re.compile(r"אשראי|SBOX", re.IGNORECASE)
 _CLUB_WORDING = re.compile(r"מועדון|חברי")
 _COUPON_WORDING = re.compile(r"קופון")
-_REWARD_COUPON = "10"
 _REWARD_CREDIT = "12"
 
 
@@ -132,7 +131,6 @@ def parse_promo_file(text: str) -> PromoFile:
                 ends_at=_datetime(f.get("promotionenddatetime", "")),
                 audience=classify_audience(f.get("clubid", ""), description, rewards),
                 is_coupon=f.get("additionaliscoupon", "") == "1"
-                or _REWARD_COUPON in rewards
                 or bool(_COUPON_WORDING.search(description)),
                 min_purchase_amount=next((m for m in min_purchase if m), None),
                 items=items,

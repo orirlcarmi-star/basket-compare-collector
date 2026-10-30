@@ -120,3 +120,10 @@ def test_stores_file_marks_online_store():
     assert [(s.store_id, s.is_online) for s in stores] == [("001", False), ("039", True)]
     assert stores[0].chain_id == "7290058140886"
     assert stores[0].sub_chain_id == "001"
+
+
+def test_reward_type_10_is_a_deal_not_a_coupon():
+    # Shufersal 2026-10-30: 620 of 661 type-10 promotions were plain multi-buy deals
+    # ("6ב25 חטיפים"); only the coupon flag or the word "קופון" marks a coupon.
+    xml = PROMO_FILE.replace("<RewardType>3</RewardType>", "<RewardType>10</RewardType>", 1)
+    assert parse_promo_file(xml).promotions[0].is_coupon is False
