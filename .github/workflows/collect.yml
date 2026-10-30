@@ -30,6 +30,12 @@ jobs:
           CHAIN: ${{ inputs.chain }}
           LIMIT: ${{ inputs.limit }}
         run: python -m collector.collect "$CHAIN" --out data ${LIMIT:+--limit "$LIMIT"}
+      - name: Keep the stores list
+        uses: actions/upload-artifact@v4
+        with:
+          name: stores-${{ inputs.chain }}
+          path: data/*/stores.json
+          retention-days: 7
       - name: Summary
         if: always()
         run: |
