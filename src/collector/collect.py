@@ -59,7 +59,7 @@ def _write_chain(
         f"{len(promo_files)} fresh promotion files"
     )
 
-    failures = 0
+    failures = deal_count = 0
     for count, (store, name) in enumerate(sorted(price_files.items()), start=1):
         if limit is not None and count > limit:
             break
@@ -69,6 +69,7 @@ def _write_chain(
             if store in promo_files:
                 promos = parse_promo_file(decode_price_file(download(promo_files[store])))
                 deals, _ = usable_deals(promos, israel_now())
+                deal_count += len(deals)
                 (chain_dir / "deals").mkdir(exist_ok=True)
                 (chain_dir / "deals" / f"{store}.json").write_text(
                     "[" + ",".join(to_json(d) for d in deals) + "]", encoding="utf-8"
@@ -76,6 +77,7 @@ def _write_chain(
         except Exception as error:  # one bad file must not stop the run
             failures += 1
             print(f"  store {store}: FAILED {type(error).__name__}: {error}", file=sys.stderr)
+    print(f"{chain_dir.name}: {deal_count:,} usable deals in total")
     return failures
 
 
