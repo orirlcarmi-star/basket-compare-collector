@@ -56,3 +56,14 @@ def test_stores_need_a_location_and_online_stores_are_left_out():
     stores, unlocated = chain_stores("shufersal", READY, listed[:1], {})
     assert stores == {}
     assert unlocated == ["shufersal:1", "shufersal:2"]
+
+
+def test_store_numbers_match_with_or_without_leading_zeros():
+    ready = dict(READY, stores={"071": READY["stores"]["1"]})
+    listed = [{"store_id": "71", "name": "שלי", "is_online": False}]
+    located = {"71": {"lat": 32.0, "lon": 34.8, "precision": "address", "city": "חיפה"}}
+    stores, unlocated = chain_stores("shufersal", ready, listed, located)
+    assert list(stores) == ["shufersal:71"]
+    products: dict = {}
+    chain_products("shufersal", ready, products)
+    assert products["milk"]["c"]["shufersal"]["s"] == ["shufersal:71"]

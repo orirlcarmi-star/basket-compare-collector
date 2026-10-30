@@ -18,6 +18,11 @@ def strip_extension(name: str) -> str:
     return re.sub(r"\.(gz|xml|zip)$", "", name, flags=re.IGNORECASE)
 
 
+def same_store(store_id: str) -> str:
+    """One spelling per store number: files of the same chain write "071" and "71"."""
+    return store_id.strip().lstrip("0") or "0"
+
+
 def kind_of(name: str) -> str:
     match = re.match(r"[A-Za-z]+", name)
     return match.group(0).lower() if match else ""

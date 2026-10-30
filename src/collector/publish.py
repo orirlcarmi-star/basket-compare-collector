@@ -9,7 +9,8 @@ must fetch only what the basket needs:
   its name and, per chain, its price per group ("g"), the stores whose price differs
   ("x") and the stores that sell it ("s"). A basket of 25 products reads ~25 files.
 
-Store keys are "<chain>:<store id>" (ids repeat across chains). The bucket of a barcode
+Store keys are "<chain>:<store number>" (numbers repeat across chains; leading zeros
+dropped, as files of one chain disagree on them). The bucket of a barcode
 is FNV-1a modulo BUCKETS, the same function the website uses.
 
 Usage: python -m collector.publish shufersal ramilevi ... --data data --out site-data
@@ -19,6 +20,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
+
+from collector.files import same_store
 
 BUCKETS = 8192
 
@@ -36,7 +39,7 @@ def chain_products(chain: str, ready: dict, into: dict[str, dict]) -> None:
     """Add one chain's prices to the product map (barcode -> product)."""
     bases = {g["id"]: g["base"] for g in ready["groups"]}
     for store_id, entry in ready["stores"].items():
-        key = f"{chain}:{store_id}"
+        key = f"{chain}:{same_store(store_id)}"
         for code in entry["stock"]:
             meta = ready["products"].get(code, {})
             product = into.setdefault(
@@ -58,10 +61,12 @@ def chain_products(chain: str, ready: dict, into: dict[str, dict]) -> None:
 
 def chain_stores(chain: str, ready: dict, listed: list[dict], located: dict) -> tuple[dict, list]:
     """Physical stores with a location; also the ones left out for lack of one."""
-    names = {s["store_id"]: s for s in listed}
+    names = {same_store(s["store_id"]): s for s in listed}
+    where_is = {same_store(sid): place for sid, place in located.items()}
     stores, unlocated = {}, []
-    for store_id, entry in ready["stores"].items():
-        info, where = names.get(store_id, {}), located.get(store_id)
+    for raw_id, entry in ready["stores"].items():
+        store_id = same_store(raw_id)
+        info, where = names.get(store_id, {}), where_is.get(store_id)
         if info.get("is_online"):
             continue
         if not where:
