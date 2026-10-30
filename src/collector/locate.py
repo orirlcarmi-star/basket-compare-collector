@@ -220,7 +220,29 @@ def update_locations(
             result[sid] = asdict(found)
         else:
             missing.append(f"{sid} {store['name']} | {store['address']} | {city}")
-    return result, missing
+    return without_shared_name_points(result, lookup, centres), missing
+
+
+def without_shared_name_points(
+    located: dict[str, dict], lookup: Lookup, centres: dict[str, tuple[float, float] | None]
+) -> dict[str, dict]:
+    """A chain-name point given to several stores is one branch among many in that city
+    (seen: 6 Shufersal stores in Haifa on one spot) — those go back to the city centre."""
+    by_point: dict[tuple[float, float], list[str]] = {}
+    for sid, loc in located.items():
+        if loc["precision"] == "store name":
+            by_point.setdefault((loc["lat"], loc["lon"]), []).append(sid)
+    for sids in by_point.values():
+        if len(sids) < 2:
+            continue
+        for sid in sids:
+            city = located[sid]["city"]
+            if city not in centres:
+                centres[city] = lookup(city)
+            centre = centres[city]
+            if centre:
+                located[sid] = dict(located[sid], lat=centre[0], lon=centre[1], precision="city")
+    return located
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -123,3 +123,10 @@ def test_chain_name_in_the_city_before_the_city_centre():
     lookup, _ = fake_lookup({"תל אביב -יפו": TEL_AVIV, "רמי לוי, תל אביב -יפו": (32.07, 34.77)})
     located, _ = update_locations([store()], {}, SETTLEMENTS, lookup, "רמי לוי")
     assert located["1"]["precision"] == "store name"
+
+
+def test_one_name_point_for_several_stores_falls_back_to_city_centre():
+    lookup, _ = fake_lookup({"תל אביב -יפו": TEL_AVIV, "רמי לוי, תל אביב -יפו": (32.07, 34.77)})
+    stores = [store(sid="1"), store(sid="2", address="הרצל 5")]
+    located, _ = update_locations(stores, {}, SETTLEMENTS, lookup, "רמי לוי")
+    assert {loc["precision"] for loc in located.values()} == {"city"}
