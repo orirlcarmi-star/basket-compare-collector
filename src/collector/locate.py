@@ -269,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     path.write_text(
         json.dumps(dict(sorted(locations.items())), ensure_ascii=False, indent=1) + "\n",
         encoding="utf-8",
+        newline="\n",  # the same file on every computer
     )
     counts = Counter(loc["precision"] for loc in locations.values())
     print(
