@@ -29,7 +29,27 @@ def test_city_code_becomes_a_name():
 
 
 def test_without_a_city_the_store_name_names_the_place():
-    assert place_of(store(name="יוחננוף חדרה", address="unknown", city="0"), {}) == ("", "חדרה")
+    places = {"1": "חדרה", "2": "נתניה", "3": "תל אביב -יפו", "4": "ראשון לציון"}
+    assert place_of(store(name="יוחננוף חדרה", address="unknown", city="0"), places) == (
+        "",
+        "חדרה",
+        True,
+    )
+    assert place_of(store(name="נתניה הדרים", address="", city="0"), places) == (
+        "הדרים",
+        "נתניה",
+        True,
+    )
+    assert place_of(store(name='ת"א - אחד העם', address="unknown", city="0"), places) == (
+        "אחד העם",
+        "תל אביב -יפו",
+        True,
+    )
+    assert place_of(store(name="ראשלצ רמת אליהו", address="משורר השואה 15", city="0"), places)[
+        :2
+    ] == ("משורר השואה 15", "ראשון לציון")
+    # A settlement name inside a longer word does not count.
+    assert place_of(store(name="מפוח", address="", city="0"), {"1": "פוח"})[1] == "מפוח"
 
 
 def test_clean_address_drops_noise():
@@ -97,3 +117,9 @@ def test_street_without_number_as_last_resort():
     lookup, _ = fake_lookup({"תל אביב -יפו": TEL_AVIV, "הבנים, תל אביב -יפו": (32.09, 34.79)})
     located, _ = update_locations([store()], {}, SETTLEMENTS, lookup)
     assert located["1"]["precision"] == "street"
+
+
+def test_chain_name_in_the_city_before_the_city_centre():
+    lookup, _ = fake_lookup({"תל אביב -יפו": TEL_AVIV, "רמי לוי, תל אביב -יפו": (32.07, 34.77)})
+    located, _ = update_locations([store()], {}, SETTLEMENTS, lookup, "רמי לוי")
+    assert located["1"]["precision"] == "store name"

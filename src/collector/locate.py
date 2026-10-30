@@ -9,7 +9,8 @@ its address changed.
 - Map service: OpenStreetMap's Nominatim, at most one request per second, with a
   User-Agent naming this project (its usage policy).
 - Precision: "address" (street and number), "street" (the street, number unknown to
-  the map), or "city" (the city centre — rough, flagged for review). A street found far
+  the map), "store name" (the map's own mark for the chain in that city — may be another
+  branch there), or "city" (the city centre). The last two are rough, for review. A street found far
   from its city centre is another street with the same name, and is not used.
 
 Usage: python -m collector.locate <chain> --data data
@@ -48,7 +49,7 @@ Lookup = Callable[[str], tuple[float, float] | None]
 class Location:
     lat: float
     lon: float
-    precision: str  # "address", "street" or "city"
+    precision: str  # "address", "street", "store name" or "city"
     address: str  # the address this was found for; a change means looking up again
     city: str
 
@@ -106,16 +107,25 @@ def distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 def locate(
-    address: str, city: str, lookup: Lookup, centres: dict[str, tuple[float, float] | None]
+    address: str,
+    city: str,
+    lookup: Lookup,
+    centres: dict[str, tuple[float, float] | None],
+    chain_name: str = "",
+    best: str = "address",
 ) -> Location | None:
+    """Try the address, then the street, then the chain's name in the city (the map
+    marks some supermarkets), then the city centre. `best` caps the precision claimed
+    (an address guessed from the store's name is "street" at best)."""
     if city not in centres:
         centres[city] = lookup(city)
     centre = centres[city]
     attempts = {}  # query -> precision; a repeated query is tried once
     for street, precision in (
-        (address, "address"),
-        (clean_address(address), "address"),
+        (address, best),
+        (clean_address(address), best),
         (street_only(address), "street"),
+        (chain_name, "store name"),
     ):
         if street.strip():
             attempts.setdefault(f"{street}, {city}", precision)
@@ -128,19 +138,56 @@ def locate(
     return None
 
 
-_CHAIN_WORDS = re.compile(r"יוחננוף|שופרסל|רמי לוי|אושר עד")
+CHAIN_NAMES = {
+    "shufersal": "שופרסל",
+    "ramilevi": "רמי לוי",
+    "osherad": "אושר עד",
+    "yohananof": "יוחננוף",
+}
+_CHAIN_WORDS = re.compile("|".join(CHAIN_NAMES.values()))
+_ABBREVIATIONS = {
+    "ראשלצ": "ראשון לציון",
+    'ת"א': "תל אביב",
+    'ב"ש': "באר שבע",
+    'פ"ת': "פתח תקווה",
+    'ר"ג': "רמת גן",
+}
 
 
-def place_of(store: Mapping[str, str], settlements: Mapping[str, str]) -> tuple[str, str]:
-    """(address, city) to look up. Without a city (Yochananof writes code 0), the store
-    name stands in for it — it usually names the place ("חדרה", "טבריה תחתית")."""
+def settlement_in(text: str, settlements: Mapping[str, str]) -> str:
+    """The longest settlement name written in the text ("נתניה הדרים" -> "נתניה")."""
+    for short, full in _ABBREVIATIONS.items():
+        text = text.replace(short, full)
+    words = f" {' '.join(re.sub(r'[^\w"]', ' ', text).split())} "
+    found = ""
+    for name in settlements.values():
+        for variant in {name, name.split(" -")[0]}:  # "תל אביב -יפו" is written "תל אביב"
+            if len(variant) > len(found) and len(variant) >= 3 and f" {variant} " in words:
+                found = name
+    return found
+
+
+def place_of(store: Mapping[str, str], settlements: Mapping[str, str]) -> tuple[str, str, bool]:
+    """(address, city, address_from_name). Without a city (Yochananof writes code 0),
+    the store name names it ("יוחננוף נתניה הדרים"), and the rest of the name ("הדרים")
+    stands in for a missing address."""
     city = city_name(store["city"], settlements)
-    if not city or city.isdigit():
-        city = " ".join(_CHAIN_WORDS.sub(" ", store["name"]).split())
     address = store["address"].strip()
-    if address.lower() == "unknown" or address == city:
+    if address.lower() == "unknown":
         address = ""
-    return address, city
+    if city and not city.isdigit():
+        return ("" if address == city else address), city, False
+    name = " ".join(_CHAIN_WORDS.sub(" ", store["name"]).split())
+    city = settlement_in(f"{name} {address}", settlements)
+    if not city:
+        return ("" if address == name else address), name, False
+    if address and address != city:
+        return address, city, False
+    rest = name
+    for short, full in _ABBREVIATIONS.items():
+        rest = rest.replace(short, full)
+    rest = " ".join(re.sub(r"[-–]", " ", rest.replace(city.split(" -")[0], " ")).split())
+    return rest, city, True
 
 
 def update_locations(
@@ -148,20 +195,27 @@ def update_locations(
     known: Mapping[str, dict],
     settlements: Mapping[str, str],
     lookup: Lookup,
+    chain_name: str = "",
+    retry_rough: bool = False,
 ) -> tuple[dict[str, dict], list[str]]:
-    """Locations for all physical stores, reusing known ones; also the stores not found."""
+    """Locations for all physical stores, reusing known ones; also the stores not found.
+    `retry_rough` looks up again the stores known only by city centre (run by hand after
+    improving the search — not every night, to spare the free map service)."""
     result: dict[str, dict] = {}
     missing: list[str] = []
     centres: dict[str, tuple[float, float] | None] = {}
     for store in stores:
         if store["is_online"]:
             continue
-        sid, (address, city) = store["store_id"], place_of(store, settlements)
+        sid = store["store_id"]
+        address, city, from_name = place_of(store, settlements)
         old = known.get(sid)
-        if old and old["address"] == address and old["city"] == city:
+        rough = retry_rough and old is not None and old["precision"] == "city"
+        if old and old["address"] == address and old["city"] == city and not rough:
             result[sid] = old
             continue
-        found = locate(address, city, lookup, centres)
+        best = "street" if from_name else "address"
+        found = locate(address, city, lookup, centres, chain_name, best)
         if found:
             result[sid] = asdict(found)
         else:
@@ -174,12 +228,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("chain")
     parser.add_argument("--data", type=Path, default=Path("data"))
     parser.add_argument("--locations", type=Path, default=Path("locations"))
+    parser.add_argument("--retry-rough", action="store_true", help="look up city-only ones again")
     args = parser.parse_args(argv)
 
     stores = json.loads((args.data / args.chain / "stores.json").read_text(encoding="utf-8"))
     path = args.locations / f"{args.chain}.json"
     known = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    locations, missing = update_locations(stores, known, load_settlements(), nominatim)
+    locations, missing = update_locations(
+        stores,
+        known,
+        load_settlements(),
+        nominatim,
+        CHAIN_NAMES.get(args.chain, ""),
+        args.retry_rough,
+    )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -189,7 +251,8 @@ def main(argv: list[str] | None = None) -> int:
     counts = Counter(loc["precision"] for loc in locations.values())
     print(
         f"{args.chain}: {len(locations)} stores located (by address {counts['address']}, "
-        f"by street {counts['street']}, city centre only {counts['city']}), "
+        f"by street {counts['street']}, by store name {counts['store name']}, "
+        f"city centre only {counts['city']}), "
         f"{len(missing)} not found"
     )
     for line in missing:
