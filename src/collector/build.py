@@ -4,19 +4,23 @@ Stores whose prices agree are grouped; each group keeps one price list, and each
 store keeps only its exceptions and the list of what it stocks
 (docs/05-data-model.md). Nothing is lost: after building, every store's prices
 are rebuilt from the ready-made files and compared with the originals, and the
-build fails on a single mismatch.
+build fails on a single mismatch. Suspicious prices are set aside first, and an update
+that looks broken is rejected without replacing the previous files (collector.sanity).
 
 Usage:  python -m collector.build <chain> --data data
 Reads data/<chain>/prices/*.json, writes data/<chain>/ready/.
 """
 
 import argparse
+import dataclasses
 import json
 import sys
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from collector.sanity import Summary, Suspicious, screen, summarize, update_problems
 
 # Two stores belong together when at least this share of the items they both sell
 # have the same price. Only affects how compact the result is, never correctness.
@@ -113,7 +117,19 @@ def load_chain(prices_dir: Path) -> tuple[dict[str, dict[str, str]], dict[str, d
     return stores, products
 
 
-def write_ready(out: Path, groups: list[Group], entries: list[StoreEntry], products: dict) -> None:
+def read_summary(out: Path) -> Summary | None:
+    path = out / "summary.json"
+    return Summary(**json.loads(path.read_text(encoding="utf-8"))) if path.exists() else None
+
+
+def write_ready(
+    out: Path,
+    groups: list[Group],
+    entries: list[StoreEntry],
+    products: dict,
+    summary: Summary,
+    suspicious: list[Suspicious],
+) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     def dump(name: str, value: object) -> None:
@@ -122,6 +138,8 @@ def write_ready(out: Path, groups: list[Group], entries: list[StoreEntry], produ
         )
 
     dump("products.json", products)
+    dump("summary.json", dataclasses.asdict(summary))
+    dump("suspicious.json", [dataclasses.asdict(s) for s in suspicious])
     dump("groups.json", [{"id": g.group_id, "stores": g.stores, "base": g.base} for g in groups])
     dump(
         "stores.json",
@@ -139,20 +157,30 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     chain_dir = args.data / args.chain
-    stores, products = load_chain(chain_dir / "prices")
-    if not stores:
+    ready = chain_dir / "ready"
+    collected, products = load_chain(chain_dir / "prices")
+    if not collected:
         print(f"{args.chain}: no price files to build from", file=sys.stderr)
+        return 1
+    stores, suspicious = screen(collected)
+    summary = summarize(collected)
+    problems = update_problems(summary, len(suspicious), read_summary(ready))
+    if problems:
+        print(f"{args.chain}: update rejected, previous files kept:", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
         return 1
     groups, entries = build(stores)
     verify(stores, groups, entries)
-    write_ready(chain_dir / "ready", groups, entries, products)
+    write_ready(ready, groups, entries, products, summary, suspicious)
 
     before = sum(len(p) for p in stores.values())
     after = sum(len(g.base) for g in groups) + sum(len(e.exceptions) for e in entries)
     print(
         f"{args.chain}: {len(stores)} stores -> {len(groups)} price groups; "
         f"price rows {before:,} -> {after:,} ({after / before:.0%}); "
-        f"{len(products):,} products; verified: every store rebuilds exactly"
+        f"{len(products):,} products; verified: every store rebuilds exactly; "
+        f"{len(suspicious)} suspicious prices set aside"
     )
     return 0
 
