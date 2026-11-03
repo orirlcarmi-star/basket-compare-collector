@@ -1,0 +1,220 @@
+name: Daily update
+
+# Every morning at 06:00 Israel time (Osher Ad is empty at night): collect the four chains,
+# build, check (exact rebuild + sanity), make the compact site files and replace the files of
+# the fixed release "site-data-latest". What each step decides is in src/collector/daily.py.
+#
+# GitHub schedules in UTC only. Israel is UTC+3 in summer and UTC+2 in winter, so the run is
+# scheduled at both 03:00 and 04:00 UTC; the "gate" job lets exactly one of them work.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Stop after N stores per chain (a test run; empty = all)"
+        required: false
+      dry_run:
+        description: "Test run: do not replace the release and do not open issues"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+env:
+  RELEASE: site-data-latest
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Last published update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$RELEASE" --pattern meta.json --clobber || echo "no meta.json yet"
+      - name: Is it time?
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+        run: python -m collector.daily gate --event "$EVENT" --meta meta.json | tee -a "$GITHUB_OUTPUT"
+
+  collect:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2 # a gentle load on the file portals
+      matrix:
+        chain: [shufersal, ramilevi, osherad, yohananof]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Yesterday's accepted files (for the jump check, and as a fallback)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN: ${{ matrix.chain }}
+        run: |
+          mkdir -p data
+          if gh release download "$RELEASE" --pattern "state-$CHAIN.tar.gz"; then
+            tar -xzf "state-$CHAIN.tar.gz" -C data
+            rm -f "data/$CHAIN/last_run.json" # that was yesterday's result, not today's
+          else
+            echo "no state for $CHAIN yet (first run)"
+          fi
+      - name: Collect
+        continue-on-error: true # a failed store must not stop the build; the sanity checks judge
+        env:
+          CHAIN: ${{ matrix.chain }}
+          LIMIT: ${{ inputs.limit }}
+        run: python -m collector.collect "$CHAIN" --out data ${LIMIT:+--limit "$LIMIT"}
+      - name: Build and check
+        continue-on-error: true # "rejected" is a result, reported by the issue step
+        env:
+          CHAIN: ${{ matrix.chain }}
+        run: python -m collector.build "$CHAIN" --data data
+      - name: Pack
+        if: always()
+        env:
+          CHAIN: ${{ matrix.chain }}
+        run: |
+          files=""
+          for f in ready stores.json last_run.json; do
+            [ -e "data/$CHAIN/$f" ] && files="$files $CHAIN/$f"
+          done
+          if [ -n "$files" ]; then tar -czf "out-$CHAIN.tar.gz" -C data $files; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: out-${{ matrix.chain }}
+          path: out-${{ matrix.chain }}.tar.gz
+          retention-days: 3
+          if-no-files-found: warn
+
+  publish:
+    needs: [gate, collect]
+    if: always() && needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write # replaces the release assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: out-*
+          path: artifacts
+          merge-multiple: true
+      - name: Unpack
+        run: |
+          mkdir -p data
+          for f in artifacts/*.tar.gz; do [ -e "$f" ] && tar -xzf "$f" -C data; done
+          echo "CHAINS=$(python -m collector.daily chains --data data)" >> "$GITHUB_ENV"
+      - name: Site files (compact, with the exact restore check)
+        run: |
+          if [ -z "$CHAINS" ]; then echo "no chain has any data" >&2; exit 1; fi
+          python -m collector.publish $CHAINS --compact --data data --out site-data
+      - name: Summary file
+        id: meta
+        run: python -m collector.daily meta shufersal ramilevi osherad yohananof --data data --site site-data --out site-data/meta.json | tee -a "$GITHUB_OUTPUT"
+      - name: Pack
+        run: |
+          cp site-data/meta.json meta.json
+          tar -czf site-data.tar.gz -C site-data .
+          ls -l site-data.tar.gz meta.json
+          {
+            echo "## Daily update"
+            echo '```json'
+            cat meta.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: meta
+          path: meta.json
+          retention-days: 3
+          if-no-files-found: ignore
+      - name: Replace the release files
+        # Only when something new came in, and never in a test run.
+        if: steps.meta.outputs.any_updated == 'true' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" >/dev/null 2>&1 \
+            || gh release create "$RELEASE" --title "$RELEASE" --notes "Replaced every morning."
+          # Yesterday's state is replaced only for chains whose update was accepted.
+          for chain in shufersal ramilevi osherad yohananof; do
+            if [ "$(jq -r --arg c "$chain" '.chains[$c].status' meta.json)" = "updated" ]; then
+              tar -czf "state-$chain.tar.gz" -C data "$chain/ready" "$chain/stores.json"
+              gh release upload "$RELEASE" "state-$chain.tar.gz" --clobber
+            fi
+          done
+          gh release upload "$RELEASE" site-data.tar.gz --clobber
+          gh release upload "$RELEASE" meta.json --clobber # last: it says the update is complete
+          gh release edit "$RELEASE" --notes "Updated $(jq -r .updated_at meta.json)"
+
+  report:
+    needs: [gate, collect, publish]
+    if: always() && needs.gate.outputs.run == 'true' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@v4
+        continue-on-error: true # no summary file when the publish job did not get that far
+        with:
+          name: meta
+          path: .
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "העדכון היומי נכשל או נדחה"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COLLECT: ${{ needs.collect.result }}
+          PUBLISH: ${{ needs.publish.result }}
+        run: |
+          set +e
+          python -m collector.daily issue --meta meta.json --collect-result "$COLLECT" \
+            --publish-result "$PUBLISH" --run-url "$RUN_URL" > body.md
+          code=$?
+          existing=$(gh issue list --state open --json number,title \
+            | jq -r --arg t "$TITLE" 'map(select(.title == $t))[0].number // empty')
+          if [ "$code" -eq 2 ]; then
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body-file body.md
+            else
+              gh issue create --title "$TITLE" --body-file body.md
+            fi
+          elif [ "$code" -eq 0 ] && [ -n "$existing" ]; then
+            gh issue close "$existing" --comment "העדכון של היום עבר כרגיל, הבעיה נפתרה."
+          fi
+          [ "$code" -eq 0 ] || [ "$code" -eq 2 ]

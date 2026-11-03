@@ -1,0 +1,48 @@
+name: Freshness check
+
+# Is the published data younger than 36 hours? Separate from the daily run on purpose: it
+# also catches a daily run that never started. Opens an issue when the data is stale and
+# closes it when the data is fresh again.
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "הנתונים באתר ישנים (יותר מ-36 שעות)"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          gh release download site-data-latest --pattern meta.json --clobber || echo "no meta.json"
+          python -m collector.daily stale --meta meta.json > message.txt
+          code=$?
+          cat message.txt
+          existing=$(gh issue list --state open --json number,title \
+            | jq -r --arg t "$TITLE" 'map(select(.title == $t))[0].number // empty')
+          if [ "$code" -ne 0 ]; then
+            printf '%s\n\nפרטי הבדיקה: %s\n' "$(cat message.txt)" "$RUN_URL" > body.md
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body-file body.md
+            else
+              gh issue create --title "$TITLE" --body-file body.md
+            fi
+          elif [ -n "$existing" ]; then
+            gh issue close "$existing" --comment "הנתונים עודכנו, הבעיה נפתרה."
+          fi
+          exit 0
