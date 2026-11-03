@@ -32,6 +32,7 @@ class Deal:
     item_codes: tuple[str, ...]  # any of these items count towards min_qty
     min_qty: Decimal  # units, or kilos for items sold by weight
     price: Decimal  # for min_qty units together
+    max_qty: Decimal | None = None  # at most this many units get the deal; None: not stated
 
 
 def usable_deals(promo_file: PromoFile, now: datetime) -> tuple[list[Deal], Counter[str]]:
@@ -47,20 +48,20 @@ def usable_deals(promo_file: PromoFile, now: datetime) -> tuple[list[Deal], Coun
             skipped["not active now"] += 1
         else:
             # One promotion may hold several offers; group items that share one.
-            offers: dict[tuple[str, Decimal, Decimal], list[str]] = {}
+            offers: dict[tuple[str, Decimal, Decimal, Decimal | None], list[str]] = {}
             for item in promo.items:
                 if item.discounted_price is None or item.discounted_price <= 0:
                     continue
                 if item.reward_type == FIXED_PRICE:
-                    key = (item.reward_type, Decimal(1), item.discounted_price)
+                    key = (item.reward_type, Decimal(1), item.discounted_price, item.max_qty)
                 elif item.reward_type in MULTI_BUY and item.min_qty and item.min_qty > 0:
-                    key = (item.reward_type, item.min_qty, item.discounted_price)
+                    key = (item.reward_type, item.min_qty, item.discounted_price, item.max_qty)
                 else:
                     continue
                 offers.setdefault(key, []).append(item.item_code)
             if not offers:
                 skipped["type not in version 1"] += 1
-            for (_, min_qty, price), codes in offers.items():
+            for (_, min_qty, price, max_qty), codes in offers.items():
                 deals.append(
                     Deal(
                         promotion_id=promo.promotion_id,
@@ -70,6 +71,7 @@ def usable_deals(promo_file: PromoFile, now: datetime) -> tuple[list[Deal], Coun
                         item_codes=tuple(sorted(codes)),
                         min_qty=min_qty,
                         price=price,
+                        max_qty=max_qty,
                     )
                 )
     return deals, skipped

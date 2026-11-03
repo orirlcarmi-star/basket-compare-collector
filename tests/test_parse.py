@@ -127,3 +127,25 @@ def test_reward_type_10_is_a_deal_not_a_coupon():
     # ("6ב25 חטיפים"); only the coupon flag or the word "קופון" marks a coupon.
     xml = PROMO_FILE.replace("<RewardType>3</RewardType>", "<RewardType>10</RewardType>", 1)
     assert parse_promo_file(xml).promotions[0].is_coupon is False
+
+
+def promo_xml(promotion_extra="", item_extra=""):
+    return (
+        "<Root><Promotions><Promotion><PromotionID>7</PromotionID>"
+        "<PromotionDescription>2ב20</PromotionDescription>"
+        f"{promotion_extra}<Groups><Group><PromotionItems><PromotionItem>"
+        "<ItemCode>1</ItemCode><RewardType>1</RewardType><MinQty>2</MinQty>"
+        f"<DiscountedPrice>20</DiscountedPrice>{item_extra}"
+        "</PromotionItem></PromotionItems></Group></Groups></Promotion></Promotions></Root>"
+    )
+
+
+def test_max_quantity_is_read_from_the_promotion_or_the_item_and_zero_means_no_limit():
+    def max_of(xml):
+        return parse_promo_file(xml).promotions[0].items[0].max_qty
+
+    assert max_of(promo_xml(promotion_extra="<MaxQty>6</MaxQty>")) == Decimal(6)
+    assert max_of(promo_xml(item_extra="<MaxQty>4</MaxQty>")) == Decimal(4)
+    assert max_of(promo_xml("<MaxQty>6</MaxQty>", "<MaxQty>4</MaxQty>")) == Decimal(4)  # item first
+    assert max_of(promo_xml(promotion_extra="<MaxQty>0</MaxQty>")) is None
+    assert max_of(promo_xml()) is None

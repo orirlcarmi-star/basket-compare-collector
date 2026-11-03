@@ -52,6 +52,7 @@ class PromotionItem:
     reward_type: str  # as published; meaning per docs/04-data-sources.md
     min_qty: Decimal | None
     discounted_price: Decimal | None
+    max_qty: Decimal | None = None  # most units the deal applies to; None when not stated
 
 
 @dataclass(frozen=True)
