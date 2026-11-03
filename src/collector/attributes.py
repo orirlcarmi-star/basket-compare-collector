@@ -143,11 +143,26 @@ def size_from_fields(quantity: Decimal | None, unit: str) -> Size | None:
 _PERCENT = re.compile(rf"(?<![\d.,])({_NUMBER})\s*%")
 _FAT_WORD = re.compile(r"שומן|שומנים")
 _FAT_FREE = re.compile(r"(?:ללא|נטול|נטולת|אפס)\s+שומן")
+# Dairy and ground-meat words, including the chains' abbreviations ("גב." = גבינה, "יוג." =
+# יוגורט) and kinds of cheese, whose name does not say "cheese" (צפתית, גאודה, קצוטה ...).
+# On such a product a percentage is fat. Short words must stand alone: סקי is a cheese, but
+# not the end of another word.
 _FATTY_FOODS = re.compile(
     r"חלב|גבינ|קוטג|שמנת|יוגורט|לבן|לבנה|מעדן|שוקו|חמאה|קפיר|ריקוטה|מוצרלה|עמק|צהובה|בולגרית"
     r"|פטה|קממבר|פרמזן|טחון|המבורגר|קבב|נקניק"
+    r"|גאוד|צפתית|קצוטה|נפולאון|עיזים|עזים|צאן|מסקרפונה|אמנטל|חלומי"
+    r"|(?<![א-ת])(?:גבי?|יוג)\.|(?<![א-ת])סקי(?![א-ת])"
 )
-_NOT_FAT_PERCENT = re.compile(r"קקאו|מריר|שוקולד|מיץ|אלכוהול|בירה|יין|סבון|כביסה|ויסקי|וודקה|קפה")
+# A chocolate, juice or alcohol product: its percentage is cocoa, fruit or alcohol. "שוק." is the
+# chains' abbreviation of שוקולד ("שוק.חלב 37%" is milk chocolate, 37% cocoa); a bare "שוק"
+# is also a chicken thigh, so only the abbreviation with its dot counts.
+_NOT_FAT_PERCENT = re.compile(
+    r"קקאו|מריר|שוקולד|שוק\.|מיץ|אלכוהול|בירה|יין|סבון|כביסה|ויסקי|וודקה|קפה"
+)
+# A percentage right next to one of these words is that, not fat: "6.5% חלבון" (protein),
+# "28%פרי" (fruit content), "70% קקאו" (cocoa). Only the word right beside the number counts.
+_PERCENT_OF_SOMETHING_ELSE = re.compile(r"\s?(?:חלבון|קקאו|פרי(?![א-ת]))")
+_SOMETHING_ELSE_BEFORE = re.compile(r"(?:חלבון|קקאו)\s?$")
 
 
 def fat_from_name(name: str) -> Decimal | None:
@@ -157,7 +172,11 @@ def fat_from_name(name: str) -> Decimal | None:
     fat_foods = _FATTY_FOODS.search(text) and not _NOT_FAT_PERCENT.search(text)
     for match in _PERCENT.finditer(text):
         percent = _number(match[1])
-        if not 0 <= percent <= 100:
+        if not 0 <= percent < 100:  # "100%" is purity ("100% קבב", "100% מיץ"), never fat
+            continue
+        if _PERCENT_OF_SOMETHING_ELSE.match(text, match.end()) or _SOMETHING_ELSE_BEFORE.search(
+            text[: match.start()]
+        ):
             continue
         around = text[max(0, match.start() - 10) : match.end() + 10]
         if _FAT_WORD.search(around) or fat_foods:

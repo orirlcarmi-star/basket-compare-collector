@@ -35,6 +35,15 @@ D = Decimal
         ("גבינה לבנה ללא שומן 250 גרם", D(0)),
         ("שמנת לבישול 15%", D(15)),
         ("חלב 10% שומן", D(10)),  # 10, not 1E+1
+        # Real Shufersal names (checked on the full file): cheeses, often abbreviated.
+        ("גב.עיזים5% למריחה 250 גר", D(5)),
+        ("גב.צפתית במים 5% במשקל", D(5)),
+        ("גב.סקי 5% 125 גרם", D(5)),
+        ("גאודה גוסט 30%במשקל", D(30)),
+        ("גבי.נפולאון24%+זיתים225ג", D(24)),
+        ("קצוטה צאן30% כ150ג א", D(30)),
+        ("גאוד.בקר כמהין150גוש32%", D(32)),
+        ("יוג.יווני 10% 150 גרם", D(10)),
     ],
 )
 def test_fat_percent(name, fat):
@@ -52,6 +61,15 @@ def test_fat_percent(name, fat):
         "יין אדום 13% אלכוהול 750 מל",
         "חלב שקדים בטעם וניל 1 ליטר",  # no percentage
         "גבינה עם שומן מופחת",  # "reduced fat", no number
+        # Real Shufersal names: a percentage that is not fat, found on the full file.
+        "יוג.יווני6.5% חלבון600גד",  # protein
+        "שוק.חלב 37% מקס ברנר90ג",  # "שוק." is שוקולד: 37% cocoa
+        "100% קבב 440ג טיבון ויל",  # 100% is purity
+        "שוקולד מריר60%",
+        "מיץ רימונים100%",
+        "רסק עגבניות28%פרי",  # fruit content
+        "חלבון 20% פרוטאין",  # protein written before the number
+        "גבינה 20% חלבון",  # protein, even on a cheese
     ],
 )
 def test_percentages_that_are_not_fat(name):
