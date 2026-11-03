@@ -176,9 +176,9 @@ def main(argv: list[str] | None = None) -> int:
             read_json(auto) if auto.exists() else {},
             load_manual(args.locations / f"{chain}.manual.json"),
         )
-        found, missing = chain_stores(
-            chain, ready, read_json(args.data / chain / "stores.json"), located
-        )
+        listed_path = args.data / chain / "stores.json"  # absent when today's collection failed
+        listed = read_json(listed_path) if listed_path.exists() else []
+        found, missing = chain_stores(chain, ready, listed, located)
         stores.update(found)
         unlocated += missing
 
@@ -194,6 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     write_json(args.out / "stores.json", listing)
 
     verify_restored(restore_prices(args.out), expected, complete=args.compact)
+    write_json(
+        args.out / "stats.json",
+        {"stores": len(stores), "products": len(products), "unlocated": len(unlocated)},
+    )
 
     sizes = [f.stat().st_size for f in (args.out / "p").iterdir()]
     print(

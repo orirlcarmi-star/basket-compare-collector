@@ -77,10 +77,22 @@ def test_build_remembers_usual_prices_and_uses_them_next_time(tmp_path):
     assert build_main(["chain", "--data", str(tmp_path)]) == 0
     remembered = json.loads((tmp_path / "chain/ready/previous_usual.json").read_text("utf-8"))
     assert remembered == {"bread": "8.90", "milk": "7.35"}
+    last = json.loads((tmp_path / "chain/last_run.json").read_text("utf-8"))
+    assert last["result"] == "updated" and last["problems"] == []
+    assert "at" in json.loads((tmp_path / "chain/ready/built.json").read_text("utf-8"))
 
     # The next day every store says 73.50: the stores agree, only yesterday shows it.
     _write_prices(tmp_path, "73.50")
     assert build_main(["chain", "--data", str(tmp_path)]) == 1  # update rejected
+    last = json.loads((tmp_path / "chain/last_run.json").read_text("utf-8"))
+    assert last["result"] == "rejected" and "suspicious" in last["problems"][0]
     assert (
         json.loads((tmp_path / "chain/ready/previous_usual.json").read_text("utf-8")) == remembered
     )
+
+
+def test_a_run_with_nothing_collected_is_recorded(tmp_path):
+    (tmp_path / "chain" / "prices").mkdir(parents=True)
+    assert build_main(["chain", "--data", str(tmp_path)]) == 1
+    last = json.loads((tmp_path / "chain/last_run.json").read_text("utf-8"))
+    assert last["result"] == "nothing collected"

@@ -157,3 +157,12 @@ def test_index_covers_every_store_in_a_fixed_order():
         "c", {"010": {"group": "g2"}, "9": {"group": "g1"}, "009": {"group": "g1"}}, same_store
     )
     assert index == {"ids": ["9", "10"], "groups": ["g1", "g2"]}  # "009" and "9" are one store
+
+
+def test_publish_works_without_todays_store_list_and_writes_stats(two_chains):
+    # Today's collection failed for beta: its ready-made files are yesterday's, and there
+    # is no stores.json. The store names are unknown but the prices are all there.
+    (two_chains / "data" / "beta" / "stores.json").unlink()
+    assert run_publish(two_chains, "v2", "--compact") == 0
+    stats = json.loads((two_chains / "v2" / "stats.json").read_text(encoding="utf-8"))
+    assert stats["products"] == 500 and stats["stores"] == 78 and stats["unlocated"] == 2
