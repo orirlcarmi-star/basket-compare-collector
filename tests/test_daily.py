@@ -195,3 +195,15 @@ def test_stale_command(tmp_path, capsys):
     assert daily_main(["stale", "--meta", str(path), "--now", old]) == 1
     assert "40 שעות" in capsys.readouterr().out
     assert daily_main(["stale", "--meta", str(tmp_path / "none.json"), "--now", old]) == 1
+
+
+def test_israel_time_zone_is_available_on_every_computer():
+    """Windows has no zone database; the tzdata package supplies it (pyproject.toml)."""
+    from importlib.metadata import requires
+    from zoneinfo import ZoneInfo
+
+    assert any(r.startswith("tzdata") for r in requires("basket-compare-collector") or [])
+    jerusalem = ZoneInfo("Asia/Jerusalem")
+    winter = utc("2026-01-15T12:00").astimezone(jerusalem)
+    summer = utc("2026-07-15T12:00").astimezone(jerusalem)
+    assert (winter.utcoffset().total_seconds(), summer.utcoffset().total_seconds()) == (7200, 10800)

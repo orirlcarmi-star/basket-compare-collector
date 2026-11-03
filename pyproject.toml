@@ -5,7 +5,9 @@ description = "Collects Israeli supermarket price-transparency files and turns t
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
-dependencies = []
+# Israel's time zone is looked up by name (collector.daily); Windows has no time zone database
+# of its own, so the data comes as a package (harmless where the system already has it).
+dependencies = ["tzdata>=2024.1"]
 
 [project.optional-dependencies]
 dev = ["pytest==8.3.4", "ruff==0.8.4"]
