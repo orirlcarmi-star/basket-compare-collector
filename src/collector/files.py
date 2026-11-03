@@ -36,6 +36,15 @@ def store_and_stamp(name: str) -> tuple[str, str] | None:
     return match["store"], match["date"] + (match["time"] or "")
 
 
+def file_stamp(name: str) -> str:
+    """Date and time of a file as 14 digits that sort as time does ("" for chain-wide files).
+    Names write the time with 4 or 6 digits; a missing time counts as midnight."""
+    match = _NAME.match(strip_extension(name))
+    if not match:
+        return ""
+    return match["date"] + (match["time"] or "").ljust(6, "0")
+
+
 def file_date(name: str) -> datetime | None:
     match = _NAME.match(strip_extension(name))
     if not match:

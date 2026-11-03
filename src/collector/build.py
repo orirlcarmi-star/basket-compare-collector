@@ -180,24 +180,31 @@ def write_last_run(chain_dir: Path, result: str, problems: list[str]) -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("chain")
-    parser.add_argument("--data", type=Path, default=Path("data"))
-    args = parser.parse_args(argv)
+def build_ready(
+    chain: str,
+    chain_dir: Path,
+    collected: dict[str, dict[str, str]],
+    products: dict[str, dict],
+    applied: dict[str, str] | None = None,
+    fallback: Mapping[str, Prices] | None = None,
+) -> int:
+    """Screen, group, verify and write the ready-made files for already collected prices.
 
-    chain_dir = args.data / args.chain
+    The one place where a chain's prices become ready-made files; the daily build and the hourly
+    update (collector.hourly) both end here, so both pass the same checks. `applied` (store ->
+    stamp of the newest price file taken in) is kept with the files for the hourly update.
+    `fallback` (store -> the prices before an update): a price of this update that is set aside as
+    suspicious is replaced by the old one, so a store does not lose a product over a bad update."""
     ready = chain_dir / "ready"
-    collected, products = load_chain(chain_dir / "prices")
-    if not collected:
-        print(f"{args.chain}: no price files to build from", file=sys.stderr)
-        write_last_run(chain_dir, "nothing collected", ["no price files were collected"])
-        return 1
     stores, suspicious = screen(collected, read_previous_usual(ready))
+    for item in suspicious if fallback else []:
+        old = fallback.get(item.store_id, {}).get(item.item_code)
+        if old is not None:
+            stores[item.store_id][item.item_code] = old
     summary = summarize(collected)
     problems = update_problems(summary, len(suspicious), read_summary(ready))
     if problems:
-        print(f"{args.chain}: update rejected, previous files kept:", file=sys.stderr)
+        print(f"{chain}: update rejected, previous files kept:", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         write_last_run(chain_dir, "rejected", problems)
@@ -208,17 +215,40 @@ def main(argv: list[str] | None = None) -> int:
     (ready / "built.json").write_text(
         json.dumps({"at": datetime.now(UTC).isoformat()}), encoding="utf-8"
     )
+    if applied is not None:
+        (ready / "applied.json").write_text(json.dumps(applied, sort_keys=True), encoding="utf-8")
     write_last_run(chain_dir, "updated", [])
 
     before = sum(len(p) for p in stores.values())
     after = sum(len(g.base) for g in groups) + sum(len(e.exceptions) for e in entries)
     print(
-        f"{args.chain}: {len(stores)} stores -> {len(groups)} price groups; "
+        f"{chain}: {len(stores)} stores -> {len(groups)} price groups; "
         f"price rows {before:,} -> {after:,} ({after / before:.0%}); "
         f"{len(products):,} products; verified: every store rebuilds exactly; "
         f"{len(suspicious)} suspicious prices set aside"
     )
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("chain")
+    parser.add_argument("--data", type=Path, default=Path("data"))
+    args = parser.parse_args(argv)
+
+    chain_dir = args.data / args.chain
+    collected, products = load_chain(chain_dir / "prices")
+    if not collected:
+        print(f"{args.chain}: no price files to build from", file=sys.stderr)
+        write_last_run(chain_dir, "nothing collected", ["no price files were collected"])
+        return 1
+    applied_path = (
+        chain_dir / "applied.json"
+    )  # written by `collect`: the stamp of each store's file
+    applied = (
+        json.loads(applied_path.read_text(encoding="utf-8")) if applied_path.exists() else None
+    )
+    return build_ready(args.chain, chain_dir, collected, products, applied)
 
 
 if __name__ == "__main__":

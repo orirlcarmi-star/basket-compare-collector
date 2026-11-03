@@ -28,6 +28,7 @@ anything on the chains' servers.
 | `python -m collector.deal_check <chain>` | compares each deal with its own wording |
 | `python -m collector.categories <chain>` | share of products with a category, and the names without one |
 | `python -m collector.daily ...` | the daily pipeline's decisions (run gate, summary file, issue text, staleness) |
+| `python -m collector.hourly <chain>` | hourly update from the partial Price files (workflow off until approved) |
 | `python -m collector.probe [names]` | read-only check of Cerberus usernames, before adding a chain |
 
 ## Daily update

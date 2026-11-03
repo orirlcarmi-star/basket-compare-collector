@@ -115,3 +115,15 @@ The real size is in `meta.json` (`search_index_bytes`, `search_index_largest_byt
 38,000 invented products with few distinct words (a pessimistic case: common words pile up in few files) gave 473
 files, 9.0 MB (2.2 MB gzipped), the largest 1.0 MB. If the real largest file is big, split the heavy prefixes by three
 letters. The number of files is checked together with all the others (18,000 in all, see "How many files").
+
+## `meta.json` and the hourly update
+
+`updated_at` is when the files were last replaced (by the daily run or by the hourly update); `full_updated_at` is when
+the last **full** update (the daily run) was. Per chain, `status` is `updated`, `unchanged` (the hourly update found
+nothing new), `kept previous` (the update was rejected by the checks, yesterday's data stays) or `missing`.
+
+The hourly update (`collector.hourly`, workflow `hourly.yml`, **off until approved**) takes in the chains' small "Price"
+files, which hold only the items whose price changed, on top of the morning's full update. It runs 07:00-23:59 Israel
+time, only after today's full update, with the same checks as the daily run. It cannot learn that a product is gone
+(only the full file says so) and does not change deals. The files of the website have the same format as after the
+daily run; only `updated_at` and some prices differ.

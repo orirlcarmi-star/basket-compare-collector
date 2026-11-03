@@ -1,0 +1,175 @@
+name: Hourly update
+
+# OFF until the product owner approves: there is no active schedule below, so this runs only
+# when started by hand (Actions -> Hourly update -> Run workflow). To switch it on, remove the
+# "# " in front of the three lines under "schedule" and merge.
+#
+# Takes in the small "Price" files the chains publish during the day (the items whose price
+# changed) on top of this morning's full update, so prices are at most an hour old. The same
+# checks as the daily run (exact rebuild, sanity, jump from the last update). What it decides
+# is in src/collector/hourly.py and src/collector/daily.py. It never runs before today's full
+# update has been published, and shares the lock of the daily run so the two never overlap.
+#
+# 04:00-21:00 UTC covers 07:00-23:59 in Israel in both summer (UTC+3) and winter (UTC+2);
+# the gate job lets only the hours 07:00-23:59 in Israel through.
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Take in at most N files per chain (a test run; empty = all)"
+        required: false
+      dry_run:
+        description: "Test run: do not replace the release"
+        type: boolean
+        default: false
+  # schedule:
+  #   - cron: "7 4-21 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+env:
+  RELEASE: site-data-latest
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Last published update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$RELEASE" --pattern meta.json --clobber || echo "no meta.json yet"
+      - name: Is it time?
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+        run: python -m collector.daily hourly-gate --event "$EVENT" --meta meta.json | tee -a "$GITHUB_OUTPUT"
+
+  update:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2 # a gentle load on the file portals
+      matrix:
+        chain: [shufersal, ramilevi, osherad, yohananof]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: This morning's accepted files
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN: ${{ matrix.chain }}
+        run: |
+          mkdir -p data
+          if gh release download "$RELEASE" --pattern "state-$CHAIN.tar.gz"; then
+            tar -xzf "state-$CHAIN.tar.gz" -C data
+            rm -f "data/$CHAIN/last_run.json"
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no state for $CHAIN yet: nothing to update"
+          fi
+      - name: Take in the new price files
+        if: steps.state.outputs.have == 'true'
+        continue-on-error: true # "rejected" is a result; the previous files stay
+        env:
+          CHAIN: ${{ matrix.chain }}
+          LIMIT: ${{ inputs.limit }}
+        run: python -m collector.hourly "$CHAIN" --data data ${LIMIT:+--limit "$LIMIT"}
+      - name: Pack
+        if: always() && steps.state.outputs.have == 'true'
+        env:
+          CHAIN: ${{ matrix.chain }}
+        run: |
+          files=""
+          for f in ready stores.json last_run.json deals; do
+            [ -e "data/$CHAIN/$f" ] && files="$files $CHAIN/$f"
+          done
+          tar -czf "out-$CHAIN.tar.gz" -C data $files
+      - uses: actions/upload-artifact@v4
+        if: steps.state.outputs.have == 'true'
+        with:
+          name: out-${{ matrix.chain }}
+          path: out-${{ matrix.chain }}.tar.gz
+          retention-days: 1
+
+  publish:
+    needs: [gate, update]
+    if: always() && needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # replaces the release assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Last published update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$RELEASE" --pattern meta.json --clobber || echo "no meta.json yet"
+      - uses: actions/download-artifact@v4
+        continue-on-error: true # no artifact when no chain had state
+        with:
+          pattern: out-*
+          path: artifacts
+          merge-multiple: true
+      - name: Unpack
+        id: unpack
+        run: |
+          mkdir -p data
+          for f in artifacts/*.tar.gz; do [ -e "$f" ] && tar -xzf "$f" -C data; done
+          chains=$(python -m collector.daily chains --data data)
+          echo "CHAINS=$chains" >> "$GITHUB_ENV"
+          [ -n "$chains" ] && echo "have=true" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Summary file
+        id: meta
+        if: steps.unpack.outputs.have == 'true'
+        run: python -m collector.daily meta shufersal ramilevi osherad yohananof --data data --site site-data --out site-data/meta.json --carry-full-from meta.json | tee -a "$GITHUB_OUTPUT"
+      - name: Site files (compact, with the exact restore check)
+        if: steps.meta.outputs.any_updated == 'true'
+        run: python -m collector.publish $CHAINS --compact --data data --out site-data --review review/unclassified.txt
+      - name: Replace the release files
+        # Only when some price really changed, and never in a test run.
+        if: steps.meta.outputs.any_updated == 'true' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # publish wrote stats.json after the first summary: make the summary again from it
+          python -m collector.daily meta shufersal ramilevi osherad yohananof --data data --site site-data --out site-data/meta.json --carry-full-from meta.json
+          cp site-data/meta.json meta-new.json
+          tar -czf site-data.tar.gz -C site-data .
+          for chain in shufersal ramilevi osherad yohananof; do
+            if [ "$(jq -r --arg c "$chain" '.chains[$c].status' meta-new.json)" = "updated" ]; then
+              state="$chain/ready $chain/stores.json"
+              [ -d "data/$chain/deals" ] && state="$state $chain/deals"
+              tar -czf "state-$chain.tar.gz" -C data $state
+              gh release upload "$RELEASE" "state-$chain.tar.gz" --clobber
+            fi
+          done
+          gh release upload "$RELEASE" site-data.tar.gz --clobber
+          [ -e review/unclassified.txt ] && gh release upload "$RELEASE" review/unclassified.txt --clobber
+          cp meta-new.json meta.json
+          gh release upload "$RELEASE" meta.json --clobber # last: it says the update is complete
+          gh release edit "$RELEASE" --notes "Updated $(jq -r .updated_at meta.json)"
