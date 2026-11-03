@@ -96,7 +96,11 @@ def day(tmp_path):
     make_chain(data, "rejected", result="rejected", suspicious=0)
     make_chain(data, "broken", result="nothing collected", built=False)
     site.mkdir()
-    (site / "stats.json").write_text(json.dumps({"stores": 7, "products": 42}), encoding="utf-8")
+    stats = {
+        "stores": 7, "products": 42, "classified_percent": 91.5,
+        "search_bytes": 5000, "search_largest_bytes": 900,
+    }  # fmt: skip
+    (site / "stats.json").write_text(json.dumps(stats), encoding="utf-8")
     return data, site
 
 
@@ -110,6 +114,8 @@ def test_meta_says_what_happened_to_every_chain(day):
     meta = make_meta(data, ["good", "rejected", "broken"], site, utc("2026-11-04T04:30"))
     assert meta["updated_at"] == "2026-11-04T04:30:00Z"
     assert (meta["stores"], meta["products"], meta["suspicious"]) == (7, 42, 2)
+    assert meta["classified_percent"] == 91.5
+    assert (meta["search_index_bytes"], meta["search_index_largest_bytes"]) == (5000, 900)
     good, rejected, broken = (meta["chains"][c] for c in ("good", "rejected", "broken"))
     assert good == {
         "status": "updated", "reason": "", "built_at": "2026-11-03T04:30:00+00:00",

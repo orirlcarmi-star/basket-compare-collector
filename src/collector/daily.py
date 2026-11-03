@@ -100,6 +100,9 @@ def make_meta(data: Path, chains: list[str], site: Path, now: datetime) -> dict:
         "stores": stats.get("stores", 0),  # physical stores with a map location
         "products": stats.get("products", 0),
         "suspicious": sum(c["suspicious"] for c in report.values()),
+        "classified_percent": stats.get("classified_percent", 0.0),
+        "search_index_bytes": stats.get("search_bytes", 0),
+        "search_index_largest_bytes": stats.get("search_largest_bytes", 0),
         "chains": report,
     }
 

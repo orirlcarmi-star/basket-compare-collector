@@ -19,9 +19,11 @@ in whichever of these forms is the shortest:
   "s": [...]   these other positions                        ("s" alone: only these)
 
 A position is a store's place in "ids". Exceptions "x" use positions too. Empty fields of a
-product ("q", "u", "w" false) are left out. Everything else is as in format 1, so a reader
-needs only the rules above: `restore_prices` is the reference decoder, and `publish` runs it
-on the files it just wrote and compares every store's prices with what the chain published.
+product ("q", "u", "w" false) are left out. "a" (facts from the name), "z" (what the package
+holds, for the unit price) and "k" (category id) are present only when known. Everything
+else is as in format 1, so a reader needs only the rules above: `restore_prices` is the
+reference decoder, and `publish` runs it on the files it just wrote and compares every
+store's prices with what the chain published.
 """
 
 import json
@@ -83,7 +85,7 @@ def compact_product(product: Mapping, indexes: Mapping[str, dict]) -> dict:
             result[field] = product[field]
     if product.get("w"):
         result["w"] = True
-    for field in ("a", "z"):
+    for field in ("a", "z", "k"):
         if field in product:
             result[field] = product[field]
     result["c"] = {}

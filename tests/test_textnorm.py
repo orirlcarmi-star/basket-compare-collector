@@ -35,3 +35,9 @@ def test_search_words_drop_numbers_stop_words_and_single_letters():
     assert words("חלב של עם 3% 1 ל 250 גרם") == ["חלב", "גרמ"]
     assert words("גב.סקי 5% 125 גרם") == ["גבינה", "סקי", "גרמ"]
     assert words("") == []
+
+
+def test_the_of_form_of_a_few_nouns_is_searched_as_the_plain_noun():
+    assert words("גבינת עמק") == ["גבינה", "עמק"]
+    assert words("עוגת גבינה") == ["עוגה", "גבינה"]
+    assert normalize("גבינת עמק") == "גבינת עמק"  # only the search words change

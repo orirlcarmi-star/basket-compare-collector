@@ -134,7 +134,7 @@ jobs:
       - name: Site files (compact, with the exact restore check)
         run: |
           if [ -z "$CHAINS" ]; then echo "no chain has any data" >&2; exit 1; fi
-          python -m collector.publish $CHAINS --compact --data data --out site-data
+          python -m collector.publish $CHAINS --compact --data data --out site-data --review review/unclassified.txt
       - name: Summary file
         id: meta
         run: python -m collector.daily meta shufersal ramilevi osherad yohananof --data data --site site-data --out site-data/meta.json | tee -a "$GITHUB_OUTPUT"
@@ -172,6 +172,8 @@ jobs:
             fi
           done
           gh release upload "$RELEASE" site-data.tar.gz --clobber
+          # names no category rule was sure about, for a person to read
+          [ -e review/unclassified.txt ] && gh release upload "$RELEASE" review/unclassified.txt --clobber
           gh release upload "$RELEASE" meta.json --clobber # last: it says the update is complete
           gh release edit "$RELEASE" --notes "Updated $(jq -r .updated_at meta.json)"
 

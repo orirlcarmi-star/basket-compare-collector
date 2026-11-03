@@ -33,6 +33,15 @@ _APOSTROPHES = re.compile("[\"'`׳״’‘“”]")
 _FINAL = str.maketrans("ךםןףץ", "כמנפצ")
 _WORD = re.compile(r"[א-תa-z0-9]+")
 _LETTER_DIGIT = re.compile(r"(?<=[א-תa-z])(?=\d)|(?<=\d)(?=[א-תa-z])")
+# "גבינת עמק" is a cheese too: whoever searches "גבינה" should find it. The few nouns whose
+# "of" form (ending in ת) is common in product names are searched in their plain form.
+CONSTRUCT_FORMS = {
+    "גבינת": "גבינה",
+    "עוגת": "עוגה",
+    "גלידת": "גלידה",
+    "חמאת": "חמאה",
+    "ביצת": "ביצה",
+}
 STOP_WORDS = {w.translate(_FINAL) for w in ("של", "עם", "את", "או", "על", "מן")}  # as normalised
 MIN_WORD = 2  # a one-letter word cannot be placed in the two-letter search files
 
@@ -46,9 +55,10 @@ def normalize(text: str) -> str:
 
 
 def words(text: str) -> list[str]:
-    """Searchable words in order: no stop words, no one-letter words, no bare numbers."""
+    """Searchable words in order: no stop words, no one-letter words, no bare numbers, and the
+    "of" form of a few nouns (גבינת) in its plain form (גבינה)."""
     return [
-        w
+        CONSTRUCT_FORMS.get(w, w)
         for w in normalize(text).split()
         if len(w) >= MIN_WORD and not w.isdigit() and w not in STOP_WORDS
     ]

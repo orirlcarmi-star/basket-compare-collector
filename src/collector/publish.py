@@ -29,6 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from collector.attributes import attributes_of
+from collector.categories import CATEGORIES, categorize
 from collector.compact import (
     FORMAT,
     build_index,
@@ -39,6 +40,8 @@ from collector.compact import (
 from collector.files import same_store
 from collector.locate import apply_manual, load_manual
 from collector.names import better_name
+from collector.searchindex import build_index as build_search_index
+from collector.searchindex import write_index
 from collector.unitprice import contents
 
 BUCKETS = 8192
@@ -82,7 +85,8 @@ def finish_products(products: dict[str, dict]) -> None:
 
     "a" holds what was found — f fat percent, b brand, d "free of" labels — and "z" what the
     package holds as [amount, "l" | "kg" | "unit"]: the unit price is the shopper's price
-    divided by that amount (collector.unitprice). Both are left out when nothing was found."""
+    divided by that amount (collector.unitprice). "k" is the category id (collector.categories).
+    All are left out when nothing was found."""
     for product in products.values():
         maker = product.pop("_m")
         found = attributes_of(
@@ -96,6 +100,9 @@ def finish_products(products: dict[str, dict]) -> None:
         }
         if any(facts.values()):
             product["a"] = {k: v for k, v in facts.items() if v}
+        category = categorize(product["n"])
+        if category:
+            product["k"] = category
         if found.size:
             amount, base = contents(found.size)
             product["z"] = [str(amount), base]
@@ -154,6 +161,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--locations", type=Path, default=Path("locations"))
     parser.add_argument("--out", type=Path, default=Path("site-data"))
     parser.add_argument(
+        "--review", type=Path, help="write the names no category rule was sure about to this file"
+    )
+    parser.add_argument(
         "--compact", action="store_true", help="write the smaller format 2 (collector.compact)"
     )
     args = parser.parse_args(argv)
@@ -194,9 +204,32 @@ def main(argv: list[str] | None = None) -> int:
     write_json(args.out / "stores.json", listing)
 
     verify_restored(restore_prices(args.out), expected, complete=args.compact)
+
+    write_json(args.out / "categories.json", [{"id": c.id, "name": c.name} for c in CATEGORIES])
+    for old in (args.out / "s").glob("*.json"):  # words of products that are gone
+        old.unlink()
+    index_files = write_index(
+        build_search_index({code: p["n"] for code, p in products.items()}), args.out / "s"
+    )
+    index_sizes = [f.stat().st_size for f in index_files]
+    unclassified = sorted((p["n"], code) for code, p in products.items() if "k" not in p)
+    if args.review:
+        args.review.parent.mkdir(parents=True, exist_ok=True)
+        args.review.write_text(
+            "".join(f"{code}\t{name}\n" for name, code in unclassified), encoding="utf-8"
+        )
+    classified = 100 * (1 - len(unclassified) / len(products)) if products else 0.0
     write_json(
         args.out / "stats.json",
-        {"stores": len(stores), "products": len(products), "unlocated": len(unlocated)},
+        {
+            "stores": len(stores),
+            "products": len(products),
+            "unlocated": len(unlocated),
+            "classified_percent": round(classified, 1),
+            "search_files": len(index_files),
+            "search_bytes": sum(index_sizes),
+            "search_largest_bytes": max(index_sizes, default=0),
+        },
     )
 
     sizes = [f.stat().st_size for f in (args.out / "p").iterdir()]
@@ -204,6 +237,10 @@ def main(argv: list[str] | None = None) -> int:
         f"{len(stores)} stores, {len(products):,} products in {BUCKETS} files "
         f"({sum(sizes) / 1e6:.0f}MB, largest {max(sizes) / 1e3:.0f}KB), "
         f"format {FORMAT if args.compact else 1}; verified: every store's prices restore exactly"
+    )
+    print(
+        f"{classified:.1f}% of products have a category; search index: {len(index_files)} files, "
+        f"{sum(index_sizes) / 1e6:.1f}MB, largest {max(index_sizes, default=0) / 1e3:.0f}KB"
     )
     if unlocated:
         print(f"left out, no location: {', '.join(unlocated)}")

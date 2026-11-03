@@ -166,3 +166,52 @@ def test_publish_works_without_todays_store_list_and_writes_stats(two_chains):
     assert run_publish(two_chains, "v2", "--compact") == 0
     stats = json.loads((two_chains / "v2" / "stats.json").read_text(encoding="utf-8"))
     assert stats["products"] == 500 and stats["stores"] == 78 and stats["unlocated"] == 2
+
+
+def test_site_files_carry_category_facts_unit_contents_and_a_search_index(two_chains, capsys):
+    from collector.searchindex import search
+
+    review = two_chains / "review" / "unclassified.txt"
+    assert run_publish(two_chains, "v2", "--compact", "--review", str(review)) == 0
+    out = capsys.readouterr().out
+    assert "have a category; search index" in out
+
+    # fake_ready names are "מוצר <barcode> 1 ליטר": no category word, but a size
+    product = next(iter(products_in(two_chains / "v2").values()))
+    assert product["z"] == ["1", "l"] and "k" not in product
+    assert len(review.read_text(encoding="utf-8").splitlines()) == 500  # all named, none sorted
+
+    categories = json.loads((two_chains / "v2" / "categories.json").read_text(encoding="utf-8"))
+    assert len(categories) == 13 and categories[0] == {"id": "dairy", "name": "חלב וביצים"}
+
+    # the index finds a product by its barcode word and by "ליטר"
+    code = next(iter(fake_ready(1)["products"]))
+    assert code in search(two_chains / "v2" / "s", f"מוצר {code}")
+    assert len(search(two_chains / "v2" / "s", "ליטר")) == 500
+    stats = json.loads((two_chains / "v2" / "stats.json").read_text(encoding="utf-8"))
+    assert stats["classified_percent"] == 0.0 and stats["search_files"] > 0
+
+
+def products_in(site):
+    """name -> product, read from every bucket file of a site folder."""
+    found = {}
+    for path in (site / "p").glob("*.json"):
+        for product in json.loads(path.read_text(encoding="utf-8")).values():
+            found[product["n"]] = product
+    return found
+
+
+def test_category_reaches_the_compact_product(two_chains):
+    ready = fake_ready(3, products=6)
+    for code, name in zip(
+        ready["products"], ["חלב 3% 1 ליטר", "עוף טרי", "מארז מתנה"], strict=False
+    ):
+        ready["products"][code]["name"] = name
+    write_chain(two_chains, "alpha", ready)
+    assert run_publish(two_chains, "v3", "--compact") == 0
+    by_name = products_in(two_chains / "v3")
+    assert by_name["חלב 3% 1 ליטר"]["k"] == "dairy" and by_name["עוף טרי"]["k"] == "meat"
+    assert "k" not in by_name["מארז מתנה"]
+    # format 1 carries the same fields, so nothing is hidden from the old reader
+    assert run_publish(two_chains, "v4") == 0
+    assert products_in(two_chains / "v4")["חלב 3% 1 ליטר"]["k"] == "dairy"
