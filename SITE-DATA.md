@@ -28,9 +28,11 @@ Every morning the pipeline replaces the files of the release **`site-data-latest
 * `categories.json` — the 14 categories `{id, name}`: dairy, meat, fish, produce, bakery, pantry, snacks, drinks, frozen,
   cleaning, hygiene, baby, home and **pets (חיות מחמד, new)**. A product with no `k` is "לא מסווג". A product is left
   without a category when no rule is sure; make-up, nail and lip products are deliberately never given one.
-* `s/<file>.json` — the search index, split by the first two letters of each word. Rules and a reference search:
-  `collector.searchindex` and `collector.textnorm` (spelling of Hebrew: no vowel points or apostrophes, final letters
-  made plain, abbreviations such as "גב." spelled out). The file name is the two letters as 4 hex digits each.
+* `s/<file>.json` — the search index, split by the first two letters of each word:
+  `{"p": [[barcode, name, category?], ...], "w": {word: [position, ...]}}`. `w` lists the words that begin with those two
+  letters, each with the positions (in `p`) of the products that contain it; `p` holds the barcode, **the name to show**
+  and the category id (left out when there is none). The file name is the two letters as 4 hex digits each. See
+  "Search" below.
 * `stats.json`, `meta.json` — counts for monitoring.
 
 The old format (format 1: `publish` without `--compact`) is still available; the pipeline publishes format 2 only.
@@ -86,3 +88,30 @@ Cloudflare Pages takes at most 20,000 files in one deployment. `publish` counts 
 `p/`, search `s/`, deals `d/`, the rest) and **fails above 18,000** with a message that names the biggest part, so a
 package the host would refuse is never published. The count is in `stats.json` (`files_total`, `files_by_part`) and in
 `meta.json`. With 8,192 product files the other parts have about 9,800 files between them.
+
+## Search (`s/`)
+
+**What changed for the website:** the search files now carry the product name and category, so showing results needs
+**one request per word of the query** (usually 1 or 2) instead of one per result (~30). The product files (`p/`) are
+read only when something is added to the basket. Before, `s/<file>.json` was `{word: [barcode, ...]}`; now it is the
+object above. A barcode is `p[i][0]`, its name `p[i][1]`, its category id `p[i][2]` when present.
+
+How to search (the reference is `collector.searchindex.search`):
+
+1. Write the query in the normal form of `collector.textnorm` (no vowel points or apostrophes, final letters made
+   plain, a dotted abbreviation such as "גב." spelled out, stop words and numbers dropped; "גבינת" is "גבינה").
+2. For each word of two or more letters read `s/<file of its first two letters>.json`; take the products of every word
+   that **starts with** the query word (typing "גבינ" finds גבינה and גבינות).
+3. Keep only the products found for all the words of the query. The first file already holds them all.
+
+**Prefix letters:** a word with a prefix letter is also indexed without it, so "קרטון" finds "בקרטון", "חלב" finds
+"וחלב", and "הדרין" finds "מהדרין". Only for ו ב ל כ ש ה מ, only when at least three letters remain, and only when the
+rest is a word the catalog really uses on its own (or one of a short list, `EXTRA_STEMS`). The word itself is always
+indexed too. So "בקר" (beef) is never cut to "קר" (cold), and "בננה" is not "ננה". If a word still gets it wrong,
+add it to `EXTRA_STEMS` or leave it out of the vocabulary; it only ever adds results, never hides one.
+
+**Size:** the index is bigger than before, because a product's name is repeated in the file of each of its words.
+The real size is in `meta.json` (`search_index_bytes`, `search_index_largest_bytes`) after each run. A test catalog of
+38,000 invented products with few distinct words (a pessimistic case: common words pile up in few files) gave 473
+files, 9.0 MB (2.2 MB gzipped), the largest 1.0 MB. If the real largest file is big, split the heavy prefixes by three
+letters. The number of files is checked together with all the others (18,000 in all, see "How many files").
