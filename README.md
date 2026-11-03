@@ -26,7 +26,17 @@ anything on the chains' servers.
 | `python -m collector.locate <chain>` | store locations (hand corrections: `locations/README.md`) |
 | `python -m collector.publish <chains> [--compact]` | the files the website serves, checked by reading them back |
 | `python -m collector.deal_check <chain>` | compares each deal with its own wording |
+| `python -m collector.categories <chain>` | share of products with a category, and the names without one |
+| `python -m collector.daily ...` | the daily pipeline's decisions (run gate, summary file, issue text, staleness) |
 | `python -m collector.probe [names]` | read-only check of Cerberus usernames, before adding a chain |
+
+## Daily update
+
+`.github/workflows/daily.yml` runs every morning at 06:00 Israel time, collects the four chains,
+builds and checks them, and replaces the files of the release `site-data-latest`
+(format: [SITE-DATA.md](SITE-DATA.md)). A failed or rejected update opens an issue; `freshness.yml` opens one
+when the data is more than 36 hours old; `heartbeat.yml` keeps the schedule from being switched off.
+The first run should be started by hand with *dry_run* ticked.
 
 ## Development
 

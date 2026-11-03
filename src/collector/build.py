@@ -9,6 +9,10 @@ that looks broken is rejected without replacing the previous files (collector.sa
 
 Usage:  python -m collector.build <chain> --data data
 Reads data/<chain>/prices/*.json, writes data/<chain>/ready/.
+
+Every run also leaves data/<chain>/last_run.json — {"result": "updated" | "rejected" |
+"nothing collected", "problems": [...], "at": ...} — which the daily pipeline reads to say
+what happened (collector.daily); a run that is rejected leaves the previous ready/ as it was.
 """
 
 import argparse
@@ -18,6 +22,7 @@ import sys
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from collector.sanity import (
@@ -165,6 +170,16 @@ def write_ready(
     )
 
 
+def write_last_run(chain_dir: Path, result: str, problems: list[str]) -> None:
+    (chain_dir / "last_run.json").write_text(
+        json.dumps(
+            {"result": result, "problems": problems, "at": datetime.now(UTC).isoformat()},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("chain")
@@ -176,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     collected, products = load_chain(chain_dir / "prices")
     if not collected:
         print(f"{args.chain}: no price files to build from", file=sys.stderr)
+        write_last_run(chain_dir, "nothing collected", ["no price files were collected"])
         return 1
     stores, suspicious = screen(collected, read_previous_usual(ready))
     summary = summarize(collected)
@@ -184,10 +200,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.chain}: update rejected, previous files kept:", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
+        write_last_run(chain_dir, "rejected", problems)
         return 1
     groups, entries = build(stores)
     verify(stores, groups, entries)
     write_ready(ready, groups, entries, products, summary, suspicious, usual_prices(collected))
+    (ready / "built.json").write_text(
+        json.dumps({"at": datetime.now(UTC).isoformat()}), encoding="utf-8"
+    )
+    write_last_run(chain_dir, "updated", [])
 
     before = sum(len(p) for p in stores.values())
     after = sum(len(g.base) for g in groups) + sum(len(e.exceptions) for e in entries)
