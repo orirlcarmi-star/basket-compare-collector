@@ -28,6 +28,7 @@ import sys
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from collector.textnorm import normalize
@@ -243,9 +244,50 @@ def _compile(spec: str) -> _Pattern:
     return _Pattern(tuple(normalize(spec.strip("^*")).split()), star, first)
 
 
-_NEVER = tuple(_compile(s) for s in NEVER)
-_STRONG = tuple((cat, tuple(_compile(s) for s in specs)) for cat, specs in STRONG)
-_RULES = tuple((cat, tuple(_compile(s) for s in specs)) for cat, specs in RULES)
+class _Index:
+    """Patterns found by the words of a name, so that a name is only tried against the patterns
+    that could match it (with ~600 patterns and 40,000 names the plain loop took half a minute).
+    A pattern is filed under its first word; a single word that may continue ("גבינ*") cannot be
+    looked up by that word, so those are tried against every name."""
+
+    def __init__(self, entries: list[tuple[int, str, _Pattern]]) -> None:
+        self._by_word: dict[str, list[tuple[int, str, _Pattern]]] = {}
+        self._wild: list[tuple[int, str, _Pattern]] = []
+        for entry in entries:
+            pattern = entry[2]
+            if pattern.prefix and len(pattern.words) == 1:
+                self._wild.append(entry)
+            else:
+                self._by_word.setdefault(pattern.words[0], []).append(entry)
+
+    def matches(self, tokens: list[str]) -> list[tuple[int, int, str, _Pattern]]:
+        """(position, order, category, pattern) of every pattern that matches the tokens."""
+        found = []
+        seen = set()
+        candidates = [e for t in set(tokens) for e in self._by_word.get(t, ())] + self._wild
+        for order, category, pattern in candidates:
+            if order in seen:
+                continue
+            seen.add(order)
+            position = _first_match(tokens, pattern)
+            if position is not None:
+                found.append((position, order, category, pattern))
+        return found
+
+
+def _entries(groups) -> list[tuple[int, str, _Pattern]]:
+    order = 0
+    entries = []
+    for category, specs in groups:
+        for spec in specs:
+            order += 1
+            entries.append((order, category, _compile(spec)))
+    return entries
+
+
+_NEVER = _Index(_entries([("never", NEVER)]))
+_STRONG = _Index(_entries(STRONG))
+_RULES = _Index(_entries(RULES))
 
 
 def _first_match(tokens: list[str], pattern: _Pattern) -> int | None:
@@ -266,24 +308,18 @@ def _first_match(tokens: list[str], pattern: _Pattern) -> int | None:
     return None
 
 
+@lru_cache(maxsize=200_000)
 def categorize(name: str) -> str | None:
     """The category id for a product name, or None when no rule is sure."""
     tokens = normalize(name).split()
-    if not tokens or any(_first_match(tokens, p) is not None for p in _NEVER):
+    if not tokens or _NEVER.matches(tokens):
         return None
-    for category, patterns in _STRONG:
-        if any(_first_match(tokens, p) is not None for p in patterns):
-            return category
+    strong = _STRONG.matches(tokens)
+    if strong:
+        return min(strong, key=lambda m: m[1])[2]  # the strong group listed first
     # (position of the match, fewer words last, order of the rule): the earliest word wins; at
     # the same place a longer phrase beats a single word, then the rule listed first.
-    candidates = []
-    order = 0
-    for category, patterns in _RULES:
-        for pattern in patterns:
-            order += 1
-            position = _first_match(tokens, pattern)
-            if position is not None:
-                candidates.append((position, -len(pattern.words), order, category))
+    candidates = [(pos, -len(p.words), order, cat) for pos, order, cat, p in _RULES.matches(tokens)]
     return min(candidates)[-1] if candidates else None
 
 
