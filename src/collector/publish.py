@@ -49,6 +49,9 @@ from collector.sitedeals import build_chain_deals, load_store_deals
 from collector.unitprice import contents
 
 BUCKETS = 8192
+# Cloudflare Pages takes at most 20,000 files in one deployment. The run fails above this many,
+# leaving room for growth, so a package the host would refuse is never published.
+MAX_SITE_FILES = 18_000
 
 
 def bucket_of(code: str) -> int:
@@ -180,6 +183,31 @@ def attach_deals(
     return written, references, skipped
 
 
+def count_files(out: Path) -> dict[str, int]:
+    """Files in the site folder by part: p (products), s (search), d (deals), other."""
+    parts = {"p": 0, "s": 0, "d": 0, "other": 0}
+    for path in out.rglob("*"):
+        if path.is_file():
+            top = path.relative_to(out).parts[0]
+            parts[top if top in parts else "other"] += 1
+    return parts
+
+
+def too_many_files(parts: dict[str, int], limit: int) -> str | None:
+    total = sum(parts.values())
+    if total <= limit:
+        return None
+    return (
+        f"TOO MANY FILES: {total:,} in the site folder, the limit is {limit:,} "
+        f"(products {parts['p']:,}, search {parts['s']:,}, deals {parts['d']:,}, "
+        f"other {parts['other']:,}). The host refuses more than 20,000 files, so nothing is "
+        f"published.\nיותר מדי קבצים: {total:,} במקום עד {limit:,}. האתר לא יקבל יותר מ-20,000 "
+        f"קבצים, ולכן שום דבר לא פורסם. הסעיף הגדול ביותר הוא "
+        f"{max(parts, key=parts.get)!r}: כדי להקטין, ממזגים קבצי מבצעים או מקטינים את מספר "
+        "קבצי המוצרים (BUCKETS)."
+    )
+
+
 def read_json(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -278,6 +306,12 @@ def main(argv: list[str] | None = None) -> int:
             "deals_left_out": dict(deals_skipped),
         },
     )
+    parts = count_files(args.out)  # stats.json is in; meta.json is added later, within the margin
+    stats = read_json(args.out / "stats.json")
+    write_json(
+        args.out / "stats.json",
+        {**stats, "files_total": sum(parts.values()), "files_by_part": parts},
+    )
 
     sizes = [f.stat().st_size for f in (args.out / "p").iterdir()]
     print(
@@ -296,8 +330,15 @@ def main(argv: list[str] | None = None) -> int:
             f"references in the product files {deal_references / 1e3:.0f}KB; "
             f"left out: {dict(deals_skipped) or 'none'}"
         )
+    print(
+        f"files in the site folder: {sum(parts.values()):,} of {MAX_SITE_FILES:,} allowed {parts}"
+    )
     if unlocated:
         print(f"left out, no location: {', '.join(unlocated)}")
+    problem = too_many_files(parts, MAX_SITE_FILES)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
     return 0
 
 

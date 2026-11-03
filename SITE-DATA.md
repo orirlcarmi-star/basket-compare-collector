@@ -60,15 +60,27 @@ and again up to `m` units in all; every other unit costs its normal price. Examp
 Basket: three units of `7290000000015` at 12.90 → at a store of price group `g1` (or at the store in position 14) the first
 two cost 20.00 together and the third 12.90: 32.90 instead of 38.70. At any other store the deal does not apply.
 
-**Variants:** a promotion id whose terms differ between stores (another price, other items, other end) has one file per
-variant: `7`, `7-2`, `7-3`... The variant that applies in the most stores has the plain id. Different wording alone does
-not make a variant.
+**Variants:** a promotion id whose terms differ between stores has one file per variant: `7`, `7-2`, `7-3`... A variant
+exists only when `q`, `p`, `m`, `c` or `e` differ. The variant that applies in the most stores has the plain id.
+Different wording does not make a variant, and neither do the items: stores that sell other kinds ("2 for 13.90 on
+herbs" lists 3, 4 or 5 barcodes depending on the store) share **one** file whose `i` is all their barcodes together
+and whose `s` is all their stores together. This is safe because the calculator only prices products that the store
+really sells (check the store's stock before applying a deal); it assumes that a store's own deal list names every
+product it sells that takes part, which is what the chain publishes for the store.
 
 **Left out** (counted in `stats.json` under `deals_left_out`): coupons and deals needing a minimum basket; credit-card
 deals (this format has only a club flag, and showing them to everyone would be wrong); deals whose quantity is not a
 whole number (such as "300 g for 25": there is no whole `q` in the units of the prices); deals already over; deals
 whose limit is below `q`; deals none of whose items the chain sells.
 
-**Not decided here:** when the basket holds units of different prices from `i`, the file does not say which `q` of them
-get the price `p`. Giving it to the cheapest units never promises more than the register gives; giving it to the dearest
-promises the most. The website must pick one and say which.
+**Which units get the price:** when the basket holds units of different prices from `i`, the `q` units that get the
+price `p` are **the cheapest ones** (decided with the product owner). The deal never promises more than the register
+gives. Example: two units of milk at 7.00 and one at 9.00 under "2 for 12": the two cheapest cost 12.00 together, the
+dearer one costs 9.00 — 21.00 in all.
+
+## How many files
+
+Cloudflare Pages takes at most 20,000 files in one deployment. `publish` counts the files of the site folder (products
+`p/`, search `s/`, deals `d/`, the rest) and **fails above 18,000** with a message that names the biggest part, so a
+package the host would refuse is never published. The count is in `stats.json` (`files_total`, `files_by_part`) and in
+`meta.json`. With 8,192 product files the other parts have about 9,800 files between them.

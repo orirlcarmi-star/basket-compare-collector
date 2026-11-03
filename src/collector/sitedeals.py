@@ -24,9 +24,15 @@ units of the prices in the product files (items, or kilos for items sold by weig
      (an integer = that place in stores.json chains.<chain>.ids). A group is named only when
      the deal applies in all its stores, and the shortest list is written.
 
-A promotion id whose terms differ between stores (another price, other items, other end)
-gets one file per variant: "<id>", "<id>-2", "<id>-3" ... — the variant in most stores has the
-plain id. Wording alone does not make a variant.
+A promotion id whose terms differ between stores (another q, p, m, club flag or end) gets one
+file per variant: "<id>", "<id>-2", "<id>-3" ... — the variant in most stores has the plain id.
+Wording alone does not make a variant, and neither do the items: every store sells other
+kinds ("2 for 13.90 on herbs" lists 3, 4 or 5 barcodes depending on the store), so stores with
+the same terms share one file whose `i` is all their barcodes together and whose `s` is all their
+stores together. That is safe because the calculator only prices products a store really
+sells; the one assumption is that a store's own deal list names every product it sells that takes
+part (what the chain publishes for the store). Without this merge six Shufersal stores made 1,993
+files, 674 of them only differing in `i`.
 
 Left out, and counted: coupons and deals needing a minimum basket (not usable, by deals.py),
 credit-card deals (the file has only a club flag, and showing them to everyone would be wrong),
@@ -64,32 +70,35 @@ def _minute(iso: str | None) -> str | None:
     return iso[:16] if iso else None  # "2026-11-05T23:59:59" -> "2026-11-05T23:59"
 
 
-def _term(deal: dict, sold: set[str], now: datetime) -> tuple[tuple | None, str | None]:
-    """(the deal's terms as a hashable key or None, the reason it is left out)."""
+def _term(deal: dict, sold: set[str], now: datetime) -> tuple[tuple | None, set[str], str | None]:
+    """(the deal's terms as a hashable key, its items the chain sells, the reason it is left out).
+
+    The key is what makes two deals the same: promotion id, q, p, m, club flag and end. The
+    items are not part of it (see the module text)."""
     if deal["audience"] == "credit_card":
-        return None, "credit-card deal"
+        return None, set(), "credit-card deal"
     quantity = _whole(Decimal(deal["min_qty"]))
     if quantity is None or quantity < 1:
-        return None, "quantity not a whole number"
+        return None, set(), "quantity not a whole number"
     ends = _minute(deal.get("ends_at"))
     if deal.get("ends_at") and datetime.fromisoformat(deal["ends_at"]) < now:
-        return None, "already over"
-    items = tuple(sorted(c for c in set(deal["item_codes"]) if c in sold))
+        return None, set(), "already over"
+    items = {c for c in deal["item_codes"] if c in sold}
     if not items:
-        return None, "no item sold in the files"
+        return None, set(), "no item sold in the files"
     cap = Decimal(deal["max_qty"]) if deal.get("max_qty") else None
     if cap is not None and cap < quantity:
-        return None, "limit below the quantity needed"  # it could never apply
+        return None, set(), "limit below the quantity needed"  # it could never apply
     max_units = int(cap) if cap is not None else None
-    return (
+    key = (
         deal["promotion_id"],
         quantity,
         str(Decimal(deal["price"])),
         max_units,
         deal["audience"] == "club",
         ends,
-        items,
-    ), None
+    )
+    return key, items, None
 
 
 def shortest_places(positions: set[int], groups: list[str]) -> list | None:
@@ -125,17 +134,19 @@ def build_chain_deals(
     groups = list(index["groups"])
     skipped: Counter[str] = Counter()
     where: dict[tuple, set[int]] = {}
+    items_of: dict[tuple, set[str]] = {}
     wording: dict[tuple, Counter[str]] = {}
     for store_id, deals in store_deals.items():
         if store_id not in position:
             skipped["store not in the files"] += len(deals)
             continue
         for deal in deals:
-            key, reason = _term(deal, sold, now)
+            key, items, reason = _term(deal, sold, now)
             if key is None:
                 skipped[reason] += 1
                 continue
             where.setdefault(key, set()).add(position[store_id])
+            items_of.setdefault(key, set()).update(items)
             wording.setdefault(key, Counter())[deal["description"]] += 1
 
     by_promotion: dict[str, list[tuple]] = {}
@@ -145,11 +156,12 @@ def build_chain_deals(
     by_item: dict[str, list[str]] = {}
     for promotion_id, keys in sorted(by_promotion.items()):
         # the variant in most stores first, then by terms: the same data gives the same ids
-        keys.sort(key=lambda k: (-len(where[k]), k[1:]))
+        keys.sort(key=lambda k: (-len(where[k]), k[1], k[2], k[3] or 0, k[4], k[5] or ""))
         for number, key in enumerate(keys, start=1):
             base = _UNSAFE.sub("_", promotion_id) or "x"
             deal_id = base if number == 1 else f"{base}-{number}"
-            _, quantity, price, max_units, club, ends, items = key
+            _, quantity, price, max_units, club, ends = key
+            items = sorted(items_of[key])
             content: dict = {
                 "t": wording[key].most_common(1)[0][0],
                 "q": quantity,
@@ -161,7 +173,7 @@ def build_chain_deals(
                 content["c"] = True
             if ends:
                 content["e"] = ends
-            content["i"] = list(items)
+            content["i"] = items
             places = shortest_places(where[key], groups)
             if places is not None:
                 content["s"] = places

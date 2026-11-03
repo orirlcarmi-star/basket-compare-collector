@@ -100,6 +100,7 @@ def day(tmp_path):
         "stores": 7, "products": 42, "classified_percent": 91.5,
         "search_bytes": 5000, "search_largest_bytes": 900,
         "deal_files": 12, "deal_bytes": 3400, "deals_left_out": {"already over": 2},
+        "files_total": 9100, "files_by_part": {"p": 8192, "s": 700, "d": 200, "other": 8},
     }  # fmt: skip
     (site / "stats.json").write_text(json.dumps(stats), encoding="utf-8")
     return data, site
@@ -119,6 +120,7 @@ def test_meta_says_what_happened_to_every_chain(day):
     assert (meta["search_index_bytes"], meta["search_index_largest_bytes"]) == (5000, 900)
     assert (meta["deal_files"], meta["deal_bytes"]) == (12, 3400)
     assert meta["deals_left_out"] == {"already over": 2}
+    assert meta["files_total"] == 9100 and meta["files_by_part"]["d"] == 200
     good, rejected, broken = (meta["chains"][c] for c in ("good", "rejected", "broken"))
     assert good == {
         "status": "updated", "reason": "", "built_at": "2026-11-03T04:30:00+00:00",

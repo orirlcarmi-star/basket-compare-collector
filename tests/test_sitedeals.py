@@ -90,17 +90,40 @@ def test_terms_that_differ_between_stores_get_their_own_id_the_commonest_first()
     assert by_item["milk"] == ["7", "7-2", "7-3"]
 
 
-def test_different_items_or_end_are_different_deals_but_different_wording_is_not():
+def test_stores_selling_other_kinds_share_one_file_with_all_items_and_all_stores():
+    # The real case: "2 for 13.90 on herbs" in stores that sell 3, 4 or 5 of the kinds.
+    herbs = ("coriander", "parsley", "dill", "mint", "chives")
+    stores = {
+        "1": [deal(items=herbs[:3])],
+        "2": [deal(items=herbs[:4])],
+        "3": [deal(items=herbs)],
+        "4": [deal(items=herbs[:3])],
+    }
+    files, by_item, _ = build(stores, sold=set(herbs))
+    assert list(files) == ["7"]  # one file, not 7, 7-2, 7-3
+    assert files["7"]["i"] == sorted(herbs)
+    assert files["7"]["s"] == ["g1", 3]  # all of g1 (positions 0-2) and position 3
+    assert by_item["chives"] == ["7"] and by_item["coriander"] == ["7"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"qty": "3", "price": "27.00"}, {"price": "18.00"}, {"max_qty": "6"},
+     {"audience": "club"}, {"ends_at": "2026-11-09T00:00:00"}],
+)  # fmt: skip
+def test_only_q_p_m_c_or_e_make_another_variant(change):
+    files, _, _ = build({"1": [deal()], "2": [deal(**change)]})
+    assert sorted(files) == ["7", "7-2"]
+
+
+def test_different_wording_alone_is_not_a_variant():
     stores = {
         "1": [deal(description="2 ב-20")],
         "2": [deal(description="2ב20")],
         "3": [deal(description="2ב20")],
-        "4": [deal(items=("milk",))],
-        "5": [deal(ends_at="2026-11-09T00:00:00")],
     }
     files, _, _ = build(stores)
-    assert len(files) == 3
-    assert files["7"]["t"] == "2ב20" and files["7"]["s"] == ["g1"]  # wording: the commonest
+    assert len(files) == 1 and files["7"]["t"] == "2ב20" and files["7"]["s"] == ["g1"]
 
 
 def test_one_promotion_with_two_offers_in_a_store_gives_two_files():
@@ -230,3 +253,38 @@ def test_deals_make_the_site_files_only_slightly_bigger(with_deals):
     with_size = sum(f.stat().st_size for f in (tmp_path / "plain").rglob("*.json"))
     without = sum(f.stat().st_size for f in (tmp_path / "none").rglob("*.json"))
     assert without < with_size < without * 1.05
+
+
+# --- the file budget: Cloudflare takes 20,000 files, the run fails above 18,000 ---
+
+
+def test_the_site_stays_far_below_the_file_limit_and_says_how_many_files_it_has(with_deals):
+    tmp_path, _, _ = with_deals
+    assert run_publish(tmp_path, "v2", "--compact") == 0
+    stats = json.loads((tmp_path / "v2" / "stats.json").read_text(encoding="utf-8"))
+    parts = stats["files_by_part"]
+    actual = sum(1 for f in (tmp_path / "v2").rglob("*") if f.is_file())
+    assert stats["files_total"] == actual == sum(parts.values())
+    assert parts["d"] == 2 and parts["p"] == 16 and parts["s"] > 0
+    assert actual < publish.MAX_SITE_FILES
+
+
+def test_the_real_settings_leave_room_for_deals():
+    # the product files alone are fixed by BUCKETS; the rest must fit in what is left
+    assert publish.BUCKETS < publish.MAX_SITE_FILES < 20_000
+    assert publish.MAX_SITE_FILES - publish.BUCKETS > 9_000
+
+
+def test_too_many_files_fails_the_run_with_a_clear_message(with_deals, monkeypatch, capsys):
+    tmp_path, _, _ = with_deals
+    monkeypatch.setattr(publish, "MAX_SITE_FILES", 10)
+    assert run_publish(tmp_path, "v2", "--compact") == 1
+    message = capsys.readouterr().err
+    assert "TOO MANY FILES" in message and "limit is 10" in message
+    assert "יותר מדי קבצים" in message and "deals" in message
+
+
+def test_message_names_the_biggest_part():
+    text = publish.too_many_files({"p": 8192, "s": 700, "d": 12000, "other": 5}, 18_000)
+    assert text and "'d'" in text and "20,000" in text
+    assert publish.too_many_files({"p": 8192, "s": 700, "d": 9000, "other": 5}, 18_000) is None
