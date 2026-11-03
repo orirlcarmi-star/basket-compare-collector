@@ -72,3 +72,9 @@ def test_no_secret_or_token_is_written_in_a_workflow():
         assert not re.search(r"ghp_|github_pat_|password:\s*\S", body), path.name
         # the only credential is the job's own token
         assert set(re.findall(r"secrets\.(\w+)", body)) <= set(), path.name
+
+
+def test_deals_travel_with_the_chain_files_and_with_yesterdays_state():
+    daily = text("daily.yml")
+    assert "ready stores.json last_run.json deals" in daily  # to the publish job
+    assert "$chain/deals" in daily  # and into the state kept in the release

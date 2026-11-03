@@ -103,6 +103,9 @@ def make_meta(data: Path, chains: list[str], site: Path, now: datetime) -> dict:
         "classified_percent": stats.get("classified_percent", 0.0),
         "search_index_bytes": stats.get("search_bytes", 0),
         "search_index_largest_bytes": stats.get("search_largest_bytes", 0),
+        "deal_files": stats.get("deal_files", 0),
+        "deal_bytes": stats.get("deal_bytes", 0),
+        "deals_left_out": stats.get("deals_left_out", {}),
         "chains": report,
     }
 

@@ -98,6 +98,8 @@ def compact_product(product: Mapping, indexes: Mapping[str, dict]) -> dict:
         }
         if entry.get("x"):
             compact["x"] = {str(position[k]): price for k, price in entry["x"].items()}
+        if entry.get("d"):
+            compact["d"] = entry["d"]  # deal ids, see collector.sitedeals
         result["c"][chain] = compact
     return result
 

@@ -24,12 +24,15 @@ Usage: python -m collector.publish shufersal ramilevi ... --data data --out site
 
 import argparse
 import json
+import shutil
 import sys
+from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
 from collector.attributes import attributes_of
 from collector.categories import CATEGORIES, categorize
+from collector.collect import israel_now
 from collector.compact import (
     FORMAT,
     build_index,
@@ -42,6 +45,7 @@ from collector.locate import apply_manual, load_manual
 from collector.names import better_name
 from collector.searchindex import build_index as build_search_index
 from collector.searchindex import write_index
+from collector.sitedeals import build_chain_deals, load_store_deals
 from collector.unitprice import contents
 
 BUCKETS = 8192
@@ -145,6 +149,37 @@ def published_prices(chain: str, ready: dict) -> dict[str, dict[str, str]]:
     }
 
 
+def attach_deals(
+    out: Path, data: Path, chains: list[str], products: dict, indexes: dict
+) -> tuple[list[Path], int, Counter[str]]:
+    """Write d/<chain>/<id>.json for every chain with deals and add "d" to the products.
+
+    Returns the files written, the size of the deal references added to the products (bytes, as
+    the products' own files will carry them) and why deals were left out (collector.sitedeals)."""
+    shutil.rmtree(out / "d", ignore_errors=True)  # deals that are gone
+    written: list[Path] = []
+    references = 0
+    skipped: Counter[str] = Counter()
+    now = israel_now()
+    for chain in chains:
+        folder = data / chain / "deals"
+        if not folder.exists():
+            continue
+        sold = {code for code, product in products.items() if chain in product["c"]}
+        files, by_item, left_out = build_chain_deals(
+            load_store_deals(folder), indexes[chain], sold, now
+        )
+        skipped += left_out
+        for deal_id, content in files.items():
+            path = out / "d" / chain / f"{deal_id}.json"
+            write_json(path, content)
+            written.append(path)
+        for code, ids in by_item.items():
+            products[code]["c"][chain]["d"] = ids
+            references += len(json.dumps(ids, separators=(",", ":")))
+    return written, references, skipped
+
+
 def read_json(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -193,6 +228,13 @@ def main(argv: list[str] | None = None) -> int:
         unlocated += missing
 
     finish_products(products)
+    deal_files: list[Path] = []
+    deal_references = 0
+    deals_skipped: Counter[str] = Counter()
+    if args.compact:  # the deal files use store positions, which only format 2 has
+        deal_files, deal_references, deals_skipped = attach_deals(
+            args.out, args.data, args.chains, products, indexes
+        )
     buckets: list[dict] = [{} for _ in range(BUCKETS)]
     for code, product in products.items():
         buckets[bucket_of(code)][code] = (
@@ -229,6 +271,11 @@ def main(argv: list[str] | None = None) -> int:
             "search_files": len(index_files),
             "search_bytes": sum(index_sizes),
             "search_largest_bytes": max(index_sizes, default=0),
+            "deal_files": len(deal_files),
+            "deal_bytes": sum(f.stat().st_size for f in deal_files),
+            "deal_largest_bytes": max((f.stat().st_size for f in deal_files), default=0),
+            "deal_references_bytes": deal_references,
+            "deals_left_out": dict(deals_skipped),
         },
     )
 
@@ -242,6 +289,13 @@ def main(argv: list[str] | None = None) -> int:
         f"{classified:.1f}% of products have a category; search index: {len(index_files)} files, "
         f"{sum(index_sizes) / 1e6:.1f}MB, largest {max(index_sizes, default=0) / 1e3:.0f}KB"
     )
+    if args.compact:
+        deal_mb = sum(f.stat().st_size for f in deal_files) / 1e6
+        print(
+            f"deals: {len(deal_files):,} files ({deal_mb:.1f}MB), "
+            f"references in the product files {deal_references / 1e3:.0f}KB; "
+            f"left out: {dict(deals_skipped) or 'none'}"
+        )
     if unlocated:
         print(f"left out, no location: {', '.join(unlocated)}")
     return 0
