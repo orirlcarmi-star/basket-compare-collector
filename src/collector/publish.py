@@ -13,7 +13,13 @@ Store keys are "<chain>:<store number>" (numbers repeat across chains; leading z
 dropped, as files of one chain disagree on them). The bucket of a barcode
 is FNV-1a modulo BUCKETS, the same function the website uses.
 
-Usage: python -m collector.publish shufersal ramilevi ... --data data --out site-data
+Format 1 (the default) is what the website reads today. `--compact` writes format 2, which
+says the same in far fewer bytes (collector.compact: sellers as "everyone", "everyone but",
+or whole price groups, instead of a list of store keys). The website must be changed to read
+it before that is switched on. Either way, the files just written are read back and every
+store's prices are compared with what the chain published; a single difference fails the run.
+
+Usage: python -m collector.publish shufersal ramilevi ... --data data --out site-data [--compact]
 """
 
 import argparse
@@ -23,6 +29,13 @@ from decimal import Decimal
 from pathlib import Path
 
 from collector.attributes import attributes_of
+from collector.compact import (
+    FORMAT,
+    build_index,
+    compact_product,
+    restore_prices,
+    verify_restored,
+)
 from collector.files import same_store
 from collector.locate import apply_manual, load_manual
 from collector.names import better_name
@@ -113,6 +126,18 @@ def chain_stores(chain: str, ready: dict, listed: list[dict], located: dict) -> 
     return stores, unlocated
 
 
+def published_prices(chain: str, ready: dict) -> dict[str, dict[str, str]]:
+    """What the chain published, per store number: {barcode: price} (the check's reference)."""
+    bases = {g["id"]: g["base"] for g in ready["groups"]}
+    return {
+        same_store(raw_id): {
+            code: entry["exceptions"].get(code, bases[entry["group"]][code])
+            for code in entry["stock"]
+        }
+        for raw_id, entry in ready["stores"].items()
+    }
+
+
 def read_json(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -128,17 +153,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data", type=Path, default=Path("data"))
     parser.add_argument("--locations", type=Path, default=Path("locations"))
     parser.add_argument("--out", type=Path, default=Path("site-data"))
+    parser.add_argument(
+        "--compact", action="store_true", help="write the smaller format 2 (collector.compact)"
+    )
     args = parser.parse_args(argv)
 
     products: dict[str, dict] = {}
     stores: dict[str, dict] = {}
     unlocated: list[str] = []
+    indexes: dict[str, dict] = {}
+    expected: dict[str, dict] = {}
     for chain in args.chains:
         ready_dir = args.data / chain / "ready"
         ready = {
             name: read_json(ready_dir / f"{name}.json") for name in ("groups", "stores", "products")
         }
         chain_products(chain, ready, products)
+        indexes[chain] = build_index(chain, ready["stores"], same_store)
+        expected[chain] = published_prices(chain, ready)
         auto = args.locations / f"{chain}.json"  # a new chain has none until `locate` has run
         located = apply_manual(
             read_json(auto) if auto.exists() else {},
@@ -153,15 +185,21 @@ def main(argv: list[str] | None = None) -> int:
     finish_products(products)
     buckets: list[dict] = [{} for _ in range(BUCKETS)]
     for code, product in products.items():
-        buckets[bucket_of(code)][code] = product
+        buckets[bucket_of(code)][code] = (
+            compact_product(product, indexes) if args.compact else product
+        )
     for number, bucket in enumerate(buckets):
         write_json(args.out / "p" / f"{number}.json", bucket)
-    write_json(args.out / "stores.json", stores)
+    listing = {"format": FORMAT, "stores": stores, "chains": indexes} if args.compact else stores
+    write_json(args.out / "stores.json", listing)
+
+    verify_restored(restore_prices(args.out), expected, complete=args.compact)
 
     sizes = [f.stat().st_size for f in (args.out / "p").iterdir()]
     print(
         f"{len(stores)} stores, {len(products):,} products in {BUCKETS} files "
-        f"({sum(sizes) / 1e6:.0f}MB, largest {max(sizes) / 1e3:.0f}KB)"
+        f"({sum(sizes) / 1e6:.0f}MB, largest {max(sizes) / 1e3:.0f}KB), "
+        f"format {FORMAT if args.compact else 1}; verified: every store's prices restore exactly"
     )
     if unlocated:
         print(f"left out, no location: {', '.join(unlocated)}")
