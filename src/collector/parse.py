@@ -50,6 +50,11 @@ def _decimal(value: str) -> Decimal | None:
         return None
 
 
+def _positive(value: str) -> Decimal | None:
+    number = _decimal(value)
+    return number if number is not None and number > 0 else None
+
+
 def _datetime(value: str) -> datetime | None:
     if not value:
         return None
@@ -114,6 +119,8 @@ def parse_promo_file(text: str) -> PromoFile:
                 reward_type=i.get("rewardtype", ""),
                 min_qty=_decimal(i.get("minqty", "")),
                 discounted_price=_decimal(i.get("discountedprice", "")),
+                # MaxQty of the item, else of the promotion; 0 means "no limit"
+                max_qty=_positive(i.get("maxqty", "") or f.get("maxqty", "")),
             )
             for i in (_fields(el) for el in _find_all(element, "promotionitem"))
             if i.get("itemcode")

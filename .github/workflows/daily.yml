@@ -97,7 +97,7 @@ jobs:
           CHAIN: ${{ matrix.chain }}
         run: |
           files=""
-          for f in ready stores.json last_run.json; do
+          for f in ready stores.json last_run.json deals; do
             [ -e "data/$CHAIN/$f" ] && files="$files $CHAIN/$f"
           done
           if [ -n "$files" ]; then tar -czf "out-$CHAIN.tar.gz" -C data $files; fi
@@ -167,7 +167,9 @@ jobs:
           # Yesterday's state is replaced only for chains whose update was accepted.
           for chain in shufersal ramilevi osherad yohananof; do
             if [ "$(jq -r --arg c "$chain" '.chains[$c].status' meta.json)" = "updated" ]; then
-              tar -czf "state-$chain.tar.gz" -C data "$chain/ready" "$chain/stores.json"
+              state="$chain/ready $chain/stores.json"
+              [ -d "data/$chain/deals" ] && state="$state $chain/deals" # yesterday's deals go with yesterday's prices
+              tar -czf "state-$chain.tar.gz" -C data $state
               gh release upload "$RELEASE" "state-$chain.tar.gz" --clobber
             fi
           done

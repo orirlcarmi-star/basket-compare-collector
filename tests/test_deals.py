@@ -60,3 +60,16 @@ def test_left_out_with_reason():
         "not active now": 1,
         "type not in version 1": 2,
     }
+
+
+def test_max_quantity_travels_with_the_deal_and_splits_offers():
+    capped = PromotionItem("a", "1", Decimal(2), Decimal("20.00"), Decimal(6))
+    open_ended = PromotionItem("b", "1", Decimal(2), Decimal("20.00"))  # same price, no cap
+    deals, _ = run(
+        Promotion("1", "deal", None, datetime(2026, 11, 5), Audience.EVERYONE, False, None,
+                  (capped, open_ended))
+    )  # fmt: skip
+    assert sorted((d.item_codes, d.max_qty) for d in deals) == [
+        (("a",), Decimal(6)),
+        (("b",), None),
+    ]
