@@ -24,6 +24,7 @@ from pathlib import Path
 
 from collector.attributes import attributes_of
 from collector.files import same_store
+from collector.locate import apply_manual, load_manual
 from collector.names import better_name
 from collector.unitprice import contents
 
@@ -138,7 +139,10 @@ def main(argv: list[str] | None = None) -> int:
             name: read_json(ready_dir / f"{name}.json") for name in ("groups", "stores", "products")
         }
         chain_products(chain, ready, products)
-        located = read_json(args.locations / f"{chain}.json")
+        located = apply_manual(
+            read_json(args.locations / f"{chain}.json"),
+            load_manual(args.locations / f"{chain}.manual.json"),
+        )
         found, missing = chain_stores(
             chain, ready, read_json(args.data / chain / "stores.json"), located
         )
