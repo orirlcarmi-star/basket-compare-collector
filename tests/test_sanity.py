@@ -1,4 +1,4 @@
-from collector.sanity import Summary, screen, update_problems
+from collector.sanity import Summary, screen, update_problems, usual_prices
 
 
 def chain(**extra: dict[str, str]) -> dict[str, dict[str, str]]:
@@ -54,3 +54,34 @@ def test_update_losing_many_stores_is_rejected():
 def test_update_with_many_suspicious_prices_is_rejected():
     # e.g. prices read in agorot instead of shekels
     assert update_problems(Summary(10, 10_000), 500) == ["500 suspicious prices out of 10,000"]
+
+
+def test_price_that_jumped_since_the_last_update_is_set_aside():
+    # Every store agrees (a whole chain wrong the same way), so only yesterday's usual
+    # price shows it: milk 7.35 yesterday, 73.50 today in all six stores.
+    today = {str(i): {"milk": "73.50", "tomato": "11.90"} for i in range(6)}
+    yesterday = usual_prices(chain())
+    assert yesterday == {"tomato": "11.90", "milk": "7.35"}
+    clean, suspicious = screen(today, yesterday)
+    assert all(c == {"tomato": "11.90"} for c in clean.values())
+    assert {(s.item_code, s.usual, s.reason) for s in suspicious} == {
+        ("milk", "7.35", "jumped since last update")
+    }
+    assert len(suspicious) == 6
+
+
+def test_moderate_rise_and_any_fall_since_the_last_update_are_kept():
+    yesterday = {"milk": "7.35", "tomato": "11.90"}
+    today = {str(i): {"milk": "14.70", "tomato": "2.38"} for i in range(6)}  # 2x up, 5x down
+    clean, suspicious = screen(today, yesterday)
+    assert suspicious == []
+    assert clean == today
+
+
+def test_first_update_and_new_items_have_nothing_to_compare_with():
+    assert screen(chain())[1] == []
+    assert screen(chain(), {"other": "1.00"})[1] == []
+
+
+def test_usual_price_needs_enough_stores():
+    assert usual_prices({"1": {"x": "1.00"}, "2": {"x": "2.00"}}) == {}

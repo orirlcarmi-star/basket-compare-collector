@@ -1,6 +1,9 @@
+import json
+
 import pytest
 
 from collector.build import Group, StoreEntry, agreement, build, group_stores, verify
+from collector.build import main as build_main
 
 SAME_A = {"milk": "7.35", "bread": "8.90", "coffee": "19.90"}
 SAME_B = {"milk": "7.35", "bread": "8.90"}  # same prices, smaller stock
@@ -52,3 +55,32 @@ def test_verify_catches_a_missing_store():
     entries = [StoreEntry("1", "g1", ("milk",), {})]
     with pytest.raises(AssertionError):
         verify(stores, groups, entries)
+
+
+def _write_prices(data, milk_price):
+    """Six stores that all sell milk and bread, in the shape `collect` writes."""
+    for number in range(6):
+        path = data / "chain" / "prices" / f"{number}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        items = [
+            {"item_code": code, "name": code, "manufacturer": "", "quantity": None, "unit": "",
+             "is_weighted": False, "price": price}
+            for code, price in (("milk", milk_price), ("bread", "8.90"))
+        ]  # fmt: skip
+        path.write_text(
+            json.dumps({"header": {"store_id": str(number)}, "items": items}), encoding="utf-8"
+        )
+
+
+def test_build_remembers_usual_prices_and_uses_them_next_time(tmp_path):
+    _write_prices(tmp_path, "7.35")
+    assert build_main(["chain", "--data", str(tmp_path)]) == 0
+    remembered = json.loads((tmp_path / "chain/ready/previous_usual.json").read_text("utf-8"))
+    assert remembered == {"bread": "8.90", "milk": "7.35"}
+
+    # The next day every store says 73.50: the stores agree, only yesterday shows it.
+    _write_prices(tmp_path, "73.50")
+    assert build_main(["chain", "--data", str(tmp_path)]) == 1  # update rejected
+    assert (
+        json.loads((tmp_path / "chain/ready/previous_usual.json").read_text("utf-8")) == remembered
+    )
