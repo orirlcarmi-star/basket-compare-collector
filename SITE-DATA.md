@@ -25,7 +25,9 @@ Every morning the pipeline replaces the files of the release **`site-data-latest
 * **Unit price** = the shopper's price ÷ `z[0]`, per `z[1]` (so 7.35 for a `["1.5","l"]` product is 4.90 per litre).
   Products with no readable size have no `z`.
 * `d/<chain>/<id>.json` — one file per deal, fetched only for the products in the basket. See "Deals" below.
-* `categories.json` — the 13 categories `{id, name}`. A product with no `k` is "לא מסווג".
+* `categories.json` — the 14 categories `{id, name}`: dairy, meat, fish, produce, bakery, pantry, snacks, drinks, frozen,
+  cleaning, hygiene, baby, home and **pets (חיות מחמד, new)**. A product with no `k` is "לא מסווג". A product is left
+  without a category when no rule is sure; make-up, nail and lip products are deliberately never given one.
 * `s/<file>.json` — the search index, split by the first two letters of each word. Rules and a reference search:
   `collector.searchindex` and `collector.textnorm` (spelling of Hebrew: no vowel points or apostrophes, final letters
   made plain, abbreviations such as "גב." spelled out). The file name is the two letters as 4 hex digits each.
