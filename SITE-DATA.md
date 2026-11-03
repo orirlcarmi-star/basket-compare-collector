@@ -127,3 +127,34 @@ files, which hold only the items whose price changed, on top of the morning's fu
 time, only after today's full update, with the same checks as the daily run. It cannot learn that a product is gone
 (only the full file says so) and does not change deals. The files of the website have the same format as after the
 daily run; only `updated_at` and some prices differ.
+
+## Proposal (not implemented): deals by weight
+
+**The gap.** "300 g for 25" (the chain's `MinQty` 0.3 kg, price 25.00) is left out today, because `q` is a whole number
+of the units of the prices, and for a product sold by weight those units are kilos. On 6 Shufersal stores that was
+121 deals of about 2,000 (counted under `deals_left_out` as "quantity not a whole number"). A fixed price per kilo
+("109 per kg") is already in, as `q = 1`.
+
+**The proposal** — nothing changes for what the website reads today:
+
+1. Weight deals get their **own reference list in the product**: `"dw": [id, ...]` next to `"d"`, and their files go to
+   the same folder `d/<chain>/<id>.json`. A reader that only knows `"d"` never meets one, so it cannot misread a
+   fractional quantity.
+2. In a weight deal file `q` is **kilos as a decimal string**, `"0.3"`; `p` is the price of those `q` kilos together;
+   `m` (when stated) is the most kilos that get the deal, also a decimal string. Everything else (`t`, `c`, `e`, `i`, `s`)
+   means what it means now.
+3. How to apply (for the website): the basket holds `w` kilos of a product of `i`; the deal applies
+   `floor(w / q)` times (no more than `floor(m / q)`), each time at `p`; the remaining weight costs the normal price per
+   kilo. Several products in `i` add up their weights; the cheapest kilos get the price, as for the other deals.
+4. `publish` would write them only for items sold by weight and only when `q` is a decimal; every other deal stays as it is.
+
+**Choices to decide:**
+- *Rounding of the weight at the register.* A shopper rarely weighs exactly 0.3 kg. The proposal charges the normal price
+  for the weight left after the whole applications; some chains charge the deal price per gram instead (`p / q` per kg
+  for the whole weight once it reaches `q`). Which one is true for each chain is not in the files; the first never
+  promises more than the register gives.
+- *Alternative:* `q` in grams (`300`) with a `"u": "g"` field. A whole number again, but a reader that ignores `u`
+  would read 300 units, so the weight deals would have to be kept apart anyway. Not recommended.
+
+**Effort:** small on our side (one more list in the products and the same deal file with a decimal `q`) and a short
+addition to the calculator on the website; no change to the files it reads today.
