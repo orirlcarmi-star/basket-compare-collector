@@ -13,6 +13,10 @@ its address changed.
   branch there), or "city" (the city centre). The last two are rough, for review. A street found far
   from its city centre is another street with the same name, and is not used.
 
+- Manual corrections: locations/<chain>.manual.json (see locations/README.md) fixes a store
+  by hand. It beats the map search: those stores are never looked up, and the published
+  files use the corrected point (`apply_manual`).
+
 Usage: python -m collector.locate <chain> --data data
 """
 
@@ -87,6 +91,36 @@ def street_only(address: str) -> str:
     return " ".join(re.sub(r"\d+", " ", clean_address(address)).split())
 
 
+_ABBREVIATED_STREET = re.compile(r"(?<![\w])(?:רח|שד|ד)\.\s*")
+_COMMERCIAL_CENTRE = re.compile(r"מרכז מסחרי\s+")
+_INDUSTRIAL_ZONE = re.compile(r"(?<![\w])(?:א\.ת\.?|אזה\"ת)\s*")
+_NUMBER_FIRST = re.compile(r"^(\d+)\s+(\D+)$")
+
+
+def other_spellings(address: str) -> list[str]:
+    """More ways to write an address the map did not know, from the habits seen in the
+    chains' lists: "רח.המלאכה 2" (a dot instead of a space), "ד.ויצמן 1", "מרכז מסחרי X"
+    (the map knows X), "א.ת באר טוביה" (written "אזור התעשייה ..." on the map), and the house
+    number written first ("1 אחי מאיר"). Only spellings that differ from the usual cleaning."""
+    usual = clean_address(address)
+    variants: list[str] = []
+    text = " ".join(address.split(",")[0].split())
+    for pattern, replacement in (
+        (_ABBREVIATED_STREET, ""),
+        (_COMMERCIAL_CENTRE, ""),
+        (_INDUSTRIAL_ZONE, "אזור התעשייה "),
+    ):
+        changed = " ".join(pattern.sub(replacement, text).split())
+        if changed != text:
+            variants.append(clean_address(changed))
+    for candidate in (text, *variants):
+        match = _NUMBER_FIRST.match(" ".join(candidate.replace("רח'", " ").split()))
+        if match:
+            variants.append(clean_address(f"{match[2]} {match[1]}"))
+    unique = {v: None for v in variants if v and v != usual}
+    return list(unique)
+
+
 def nominatim(query: str, get: Callable[[str], object] = http_json) -> tuple[float, float] | None:
     params = {"q": query, "countrycodes": "il", "format": "json", "limit": 1}
     results = get(f"{NOMINATIM}?{urlencode(params)}")
@@ -125,6 +159,7 @@ def locate(
         (address, best),
         (clean_address(address), best),
         (street_only(address), "street"),
+        *((v, best if re.search(r"\d", v) else "street") for v in other_spellings(address)),
         (chain_name, "store name"),
     ):
         if street.strip():
@@ -154,6 +189,11 @@ _ABBREVIATIONS = {
 }
 
 
+# Settlements whose name is far more often a word of the address or store name than the city:
+# "רחוב אחד העם", "אזור התעשייה", "יגאל אלון" must not become the cities רחוב, אזור, אלון.
+_NOT_CITY_WORDS = {"אזור", "רחוב", "ישן", "אלון"}
+
+
 def settlement_in(text: str, settlements: Mapping[str, str]) -> str:
     """The longest settlement name written in the text ("נתניה הדרים" -> "נתניה")."""
     for short, full in _ABBREVIATIONS.items():
@@ -161,6 +201,8 @@ def settlement_in(text: str, settlements: Mapping[str, str]) -> str:
     words = f" {' '.join(re.sub(r'[^\w"]', ' ', text).split())} "
     found = ""
     for name in settlements.values():
+        if name in _NOT_CITY_WORDS:
+            continue
         for variant in {name, name.split(" -")[0]}:  # "תל אביב -יפו" is written "תל אביב"
             if len(variant) > len(found) and len(variant) >= 3 and f" {variant} " in words:
                 found = name
@@ -190,6 +232,52 @@ def place_of(store: Mapping[str, str], settlements: Mapping[str, str]) -> tuple[
     return rest, city, True
 
 
+# Israel, with a margin: a hand-written point outside it is a typo (swapped or missing digits).
+_LAT_RANGE, _LON_RANGE = (29.0, 33.6), (34.0, 36.0)
+_PRECISIONS = {"address", "street", "store name", "city"}
+
+
+def load_manual(path: Path) -> dict[str, dict]:
+    """The hand-written corrections of one chain; {} when there is no such file.
+
+    {"413": {"lat": 32.07, "lon": 34.78, "city": "תל אביב", "note": "why"}} — the store
+    number may be written with or without leading zeros. Raises ValueError, naming the
+    store, for a point outside Israel or a missing field, so a typo never reaches the map."""
+    if not path.exists():
+        return {}
+    corrections: dict[str, dict] = {}
+    for raw_id, entry in json.loads(path.read_text(encoding="utf-8")).items():
+        if raw_id.startswith("_"):  # "_help" and other comments
+            continue
+        sid = raw_id.strip().lstrip("0") or "0"
+        try:
+            lat, lon = float(entry["lat"]), float(entry["lon"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"{path.name}: store {raw_id}: lat and lon are needed") from None
+        if not (_LAT_RANGE[0] <= lat <= _LAT_RANGE[1] and _LON_RANGE[0] <= lon <= _LON_RANGE[1]):
+            raise ValueError(f"{path.name}: store {raw_id}: {lat}, {lon} is not in Israel")
+        precision = entry.get("precision", "address")
+        if precision not in _PRECISIONS:
+            raise ValueError(f"{path.name}: store {raw_id}: unknown precision {precision!r}")
+        corrections[sid] = {
+            "lat": lat,
+            "lon": lon,
+            "precision": precision,
+            "address": entry.get("note", ""),
+            "city": entry.get("city", ""),
+        }
+    return corrections
+
+
+def apply_manual(located: Mapping[str, dict], manual: Mapping[str, dict]) -> dict[str, dict]:
+    """The searched locations with the hand-written ones on top (store numbers compared
+    without leading zeros). A correction without a city keeps the searched city."""
+    result = {(sid.strip().lstrip("0") or "0"): place for sid, place in located.items()}
+    for sid, fix in manual.items():
+        result[sid] = dict(fix, city=fix["city"] or result.get(sid, {}).get("city", ""))
+    return result
+
+
 def update_locations(
     stores: list[dict],
     known: Mapping[str, dict],
@@ -197,10 +285,12 @@ def update_locations(
     lookup: Lookup,
     chain_name: str = "",
     retry_rough: bool = False,
+    manual: Mapping[str, dict] | None = None,
 ) -> tuple[dict[str, dict], list[str]]:
     """Locations for all physical stores, reusing known ones; also the stores not found.
     `retry_rough` looks up again the stores known only by city centre (run by hand after
-    improving the search — not every night, to spare the free map service)."""
+    improving the search — not every night, to spare the free map service). Stores with a
+    hand-written correction are not searched, and not listed here: the correction wins."""
     result: dict[str, dict] = {}
     missing: list[str] = []
     centres: dict[str, tuple[float, float] | None] = {}
@@ -208,6 +298,8 @@ def update_locations(
         if store["is_online"]:
             continue
         sid = store["store_id"]
+        if (sid.strip().lstrip("0") or "0") in (manual or {}):
+            continue
         address, city, from_name = place_of(store, settlements)
         old = known.get(sid)
         rough = retry_rough and old is not None and old["precision"] == "city"
@@ -255,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
 
     stores = json.loads((args.data / args.chain / "stores.json").read_text(encoding="utf-8"))
     path = args.locations / f"{args.chain}.json"
+    manual = load_manual(args.locations / f"{args.chain}.manual.json")
     known = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     locations, missing = update_locations(
         stores,
@@ -263,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         nominatim,
         CHAIN_NAMES.get(args.chain, ""),
         args.retry_rough,
+        manual,
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{args.chain}: {len(locations)} stores located (by address {counts['address']}, "
         f"by street {counts['street']}, by store name {counts['store name']}, "
         f"city centre only {counts['city']}), "
-        f"{len(missing)} not found"
+        f"{len(missing)} not found; {len(manual)} fixed by hand"
     )
     for line in missing:
         print(f"  not found: {line}")

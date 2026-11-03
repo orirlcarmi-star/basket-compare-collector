@@ -17,6 +17,17 @@ anything on the chains' servers.
 | `src/collector/` | The collector code |
 | `tests/` | Automated tests — run on every push |
 
+## Tools
+
+| Command | What it does |
+|---|---|
+| `python -m collector.collect <chain> --out data` | download a chain's latest files |
+| `python -m collector.build <chain>` | ready-made files; sets aside suspicious prices |
+| `python -m collector.locate <chain>` | store locations (hand corrections: `locations/README.md`) |
+| `python -m collector.publish <chains> [--compact]` | the files the website serves, checked by reading them back |
+| `python -m collector.deal_check <chain>` | compares each deal with its own wording |
+| `python -m collector.probe [names]` | read-only check of Cerberus usernames, before adding a chain |
+
 ## Development
 
 ```bash

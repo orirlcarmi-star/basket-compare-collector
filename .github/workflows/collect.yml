@@ -36,6 +36,22 @@ jobs:
           name: stores-${{ inputs.chain }}
           path: data/*/stores.json
           retention-days: 7
+      - name: Check how the deals were read
+        # Compares each deal with its own wording; red means the reward codes may mean
+        # something else for this chain (src/collector/deal_check.py). Never stops the run.
+        if: always()
+        continue-on-error: true
+        env:
+          CHAIN: ${{ inputs.chain }}
+        run: |
+          {
+            echo "## Deals read: $CHAIN"
+            echo '```'
+            python -m collector.deal_check "$CHAIN" --data data
+            status=$?
+            echo '```'
+            exit $status
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Summary
         if: always()
         run: |

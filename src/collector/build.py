@@ -20,7 +20,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from collector.sanity import Summary, Suspicious, screen, summarize, update_problems
+from collector.sanity import (
+    Summary,
+    Suspicious,
+    screen,
+    summarize,
+    update_problems,
+    usual_prices,
+)
 
 # Two stores belong together when at least this share of the items they both sell
 # have the same price. Only affects how compact the result is, never correctness.
@@ -122,6 +129,12 @@ def read_summary(out: Path) -> Summary | None:
     return Summary(**json.loads(path.read_text(encoding="utf-8"))) if path.exists() else None
 
 
+def read_previous_usual(out: Path) -> dict[str, str]:
+    """Each item's usual price in the previous update; empty on the first build."""
+    path = out / "previous_usual.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
 def write_ready(
     out: Path,
     groups: list[Group],
@@ -129,6 +142,7 @@ def write_ready(
     products: dict,
     summary: Summary,
     suspicious: list[Suspicious],
+    usual: dict[str, str],
 ) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
@@ -139,6 +153,7 @@ def write_ready(
 
     dump("products.json", products)
     dump("summary.json", dataclasses.asdict(summary))
+    dump("previous_usual.json", usual)  # read by the next build's jump check
     dump("suspicious.json", [dataclasses.asdict(s) for s in suspicious])
     dump("groups.json", [{"id": g.group_id, "stores": g.stores, "base": g.base} for g in groups])
     dump(
@@ -162,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
     if not collected:
         print(f"{args.chain}: no price files to build from", file=sys.stderr)
         return 1
-    stores, suspicious = screen(collected)
+    stores, suspicious = screen(collected, read_previous_usual(ready))
     summary = summarize(collected)
     problems = update_problems(summary, len(suspicious), read_summary(ready))
     if problems:
@@ -172,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     groups, entries = build(stores)
     verify(stores, groups, entries)
-    write_ready(ready, groups, entries, products, summary, suspicious)
+    write_ready(ready, groups, entries, products, summary, suspicious, usual_prices(collected))
 
     before = sum(len(p) for p in stores.values())
     after = sum(len(g.base) for g in groups) + sum(len(e.exceptions) for e in entries)

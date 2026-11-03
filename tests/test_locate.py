@@ -1,9 +1,17 @@
+import json
+
+import pytest
+
 from collector.locate import (
+    apply_manual,
     city_name,
     clean_address,
     distance_km,
+    load_manual,
     load_settlements,
+    other_spellings,
     place_of,
+    settlement_in,
     street_only,
     update_locations,
 )
@@ -130,3 +138,87 @@ def test_one_name_point_for_several_stores_falls_back_to_city_centre():
     stores = [store(sid="1"), store(sid="2", address="הרצל 5")]
     located, _ = update_locations(stores, {}, SETTLEMENTS, lookup, "רמי לוי")
     assert {loc["precision"] for loc in located.values()} == {"city"}
+
+
+# Addresses that were left at "city" precision in locations/*.json before.
+def test_other_spellings_of_addresses_the_map_did_not_know():
+    assert other_spellings("רח.המלאכה 2") == ["המלאכה 2"]
+    assert other_spellings("ד.ויצמן 1") == ["ויצמן 1"]
+    assert other_spellings("רח משה יתום  46") == []  # cleaning already handles this one
+    assert other_spellings("א.ת באר טוביה") == ["אזור התעשייה באר טוביה"]
+    assert other_spellings("א.ת שילת") == ["אזור התעשייה שילת"]
+    assert other_spellings("מרכז מסחרי מטה בנמין") == ["מטה בנמין"]
+    assert other_spellings("1 אחי מאיר") == ["אחי מאיר 1"]
+    assert other_spellings("24 פנחס רוזן") == ["פנחס רוזן 24"]
+    assert other_spellings("הבנים 46") == []
+
+
+def test_other_spellings_are_tried_after_the_usual_ones_and_keep_the_house_number():
+    lookup, asked = fake_lookup(
+        {"תל אביב -יפו": TEL_AVIV, "אחי מאיר 1, תל אביב -יפו": (32.09, 34.79)}
+    )
+    located, _ = update_locations([store(address="1 אחי מאיר")], {}, SETTLEMENTS, lookup)
+    assert located["1"]["precision"] == "address"  # the number is there, so still an address
+    assert asked.index("1 אחי מאיר, תל אביב -יפו") < asked.index("אחי מאיר 1, תל אביב -יפו")
+
+    lookup, _ = fake_lookup(
+        {"תל אביב -יפו": TEL_AVIV, "אזור התעשייה שילת, תל אביב -יפו": (32.09, 34.79)}
+    )
+    located, _ = update_locations([store(address="א.ת שילת")], {}, SETTLEMENTS, lookup)
+    assert located["1"]["precision"] == "street"  # an area, not an exact address
+
+
+def test_a_street_word_is_not_taken_for_the_city():
+    places = {"1": "רחוב", "2": "אזור", "3": "אלון", "4": "אשדוד"}
+    assert settlement_in("יוחננוף רחוב אחד העם 19", places) == ""
+    assert settlement_in("אזור התעשיה יגאל אלון 57", places) == ""
+    assert settlement_in("יוחננוף אשדוד רחוב הרצל", places) == "אשדוד"
+
+
+def write_manual(tmp_path, content):
+    path = tmp_path / "shufersal.manual.json"
+    path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_manual_correction_beats_the_search(tmp_path):
+    manual = load_manual(
+        write_manual(tmp_path, {"_help": "x", "007": {"lat": 32.07, "lon": 34.78, "city": "חיפה"}})
+    )
+    assert list(manual) == ["7"]  # leading zeros dropped, comments skipped
+    assert manual["7"]["precision"] == "address"
+
+    lookup, asked = fake_lookup({"תל אביב -יפו": TEL_AVIV})
+    located, missing = update_locations([store(sid="007")], {}, SETTLEMENTS, lookup, manual=manual)
+    assert located == {} and missing == [] and asked == []  # not searched, not "missing"
+
+    searched = {"007": {"lat": 1.0, "lon": 2.0, "precision": "city", "address": "", "city": "x"}}
+    merged = apply_manual(searched, manual)
+    assert merged["7"]["lat"] == 32.07
+    assert merged["7"]["city"] == "חיפה"
+
+
+def test_manual_correction_without_a_city_keeps_the_searched_city(tmp_path):
+    manual = load_manual(write_manual(tmp_path, {"7": {"lat": 32.07, "lon": 34.78}}))
+    searched = {"7": {"lat": 1.0, "lon": 2.0, "precision": "city", "address": "", "city": "חיפה"}}
+    assert apply_manual(searched, manual)["7"]["city"] == "חיפה"
+    assert apply_manual({}, manual)["7"]["city"] == ""  # a store the search never found
+
+
+def test_no_manual_file_means_no_corrections(tmp_path):
+    assert load_manual(tmp_path / "missing.json") == {}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"lat": 48.1, "lon": 34.78},  # latitude of Munich
+        {"lat": 32.07, "lon": 3.478},  # a digit lost
+        {"lat": "בערך", "lon": 34.78},
+        {"lon": 34.78},
+        {"lat": 32.07, "lon": 34.78, "precision": "exact"},
+    ],
+)
+def test_a_wrong_manual_correction_is_refused_loudly(tmp_path, entry):
+    with pytest.raises(ValueError, match="store 413"):
+        load_manual(write_manual(tmp_path, {"413": entry}))
