@@ -1,0 +1,37 @@
+name: Check Cerberus usernames
+
+# Manual run only. Logs in to the file portal with each public username, reads the file
+# list and reports what it found (nothing is downloaded or changed). Used before a new
+# chain is added; see src/collector/probe.py.
+on:
+  workflow_dispatch:
+    inputs:
+      names:
+        description: "Usernames to try, separated by spaces (empty = the built-in candidates)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Probe
+        env:
+          NAMES: ${{ inputs.names }}
+        run: |
+          set -o pipefail
+          {
+            echo "## Cerberus usernames"
+            echo
+            echo '```'
+            python -m collector.probe $NAMES || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

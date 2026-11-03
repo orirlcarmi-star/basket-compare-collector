@@ -44,7 +44,13 @@ def csrf_token(page_html: str) -> str:
 
 def parse_file_list(payload: str) -> list[RemoteFile]:
     """The portal's /file/json/dir answer: {"aaData": [{"fname": ..., "size": ...}, ...]}."""
-    rows = json.loads(payload).get("aaData", [])
+    try:
+        rows = json.loads(payload).get("aaData", [])
+    except (json.JSONDecodeError, AttributeError):
+        # What a wrong username gets: the login page again instead of a file list.
+        raise ValueError(
+            "the portal did not answer with a file list (wrong username, or the login failed)"
+        ) from None
     return [
         RemoteFile(name=row["fname"], size=row.get("size"))
         for row in rows

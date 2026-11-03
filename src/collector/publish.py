@@ -139,8 +139,9 @@ def main(argv: list[str] | None = None) -> int:
             name: read_json(ready_dir / f"{name}.json") for name in ("groups", "stores", "products")
         }
         chain_products(chain, ready, products)
+        auto = args.locations / f"{chain}.json"  # a new chain has none until `locate` has run
         located = apply_manual(
-            read_json(args.locations / f"{chain}.json"),
+            read_json(auto) if auto.exists() else {},
             load_manual(args.locations / f"{chain}.manual.json"),
         )
         found, missing = chain_stores(
