@@ -19,9 +19,13 @@ Usage: python -m collector.publish shufersal ramilevi ... --data data --out site
 import argparse
 import json
 import sys
+from decimal import Decimal
 from pathlib import Path
 
+from collector.attributes import attributes_of
 from collector.files import same_store
+from collector.names import better_name
+from collector.unitprice import contents
 
 BUCKETS = 8192
 
@@ -36,27 +40,51 @@ def bucket_of(code: str) -> int:
 
 
 def chain_products(chain: str, ready: dict, into: dict[str, dict]) -> None:
-    """Add one chain's prices to the product map (barcode -> product)."""
+    """Add one chain's prices to the product map (barcode -> product).
+
+    When chains disagree about a barcode, the clearest name wins (collector.names) and an
+    empty size or manufacturer is filled from whichever chain has it."""
     bases = {g["id"]: g["base"] for g in ready["groups"]}
     for store_id, entry in ready["stores"].items():
         key = f"{chain}:{same_store(store_id)}"
         for code in entry["stock"]:
             meta = ready["products"].get(code, {})
             product = into.setdefault(
-                code,
-                {
-                    "n": meta.get("name", ""),
-                    "q": meta.get("quantity", ""),
-                    "u": meta.get("unit", ""),
-                    "w": meta.get("is_weighted", False),
-                    "c": {},
-                },
+                code, {"n": "", "q": "", "u": "", "w": False, "_m": "", "c": {}}
             )
+            product["n"] = better_name(product["n"], meta.get("name") or "")
+            for field, source in (("q", "quantity"), ("u", "unit"), ("_m", "manufacturer")):
+                product[field] = product[field] or meta.get(source) or ""
+            product["w"] = product["w"] or bool(meta.get("is_weighted"))
             prices = product["c"].setdefault(chain, {"g": {}, "s": []})
             prices["g"].setdefault(entry["group"], bases[entry["group"]][code])
             prices["s"].append(key)
             if code in entry["exceptions"]:
                 prices.setdefault("x", {})[key] = entry["exceptions"][code]
+
+
+def finish_products(products: dict[str, dict]) -> None:
+    """Once every chain is in: read facts from each final name (collector.attributes).
+
+    "a" holds what was found — f fat percent, b brand, d "free of" labels — and "z" what the
+    package holds as [amount, "l" | "kg" | "unit"]: the unit price is the shopper's price
+    divided by that amount (collector.unitprice). Both are left out when nothing was found."""
+    for product in products.values():
+        maker = product.pop("_m")
+        found = attributes_of(
+            product["n"], maker, Decimal(product["q"]) if product["q"] else None, product["u"],
+            product["w"],
+        )  # fmt: skip
+        facts = {
+            "f": str(found.fat_percent) if found.fat_percent is not None else "",
+            "b": found.brand,
+            "d": list(found.free_of),
+        }
+        if any(facts.values()):
+            product["a"] = {k: v for k, v in facts.items() if v}
+        if found.size:
+            amount, base = contents(found.size)
+            product["z"] = [str(amount), base]
 
 
 def chain_stores(chain: str, ready: dict, listed: list[dict], located: dict) -> tuple[dict, list]:
@@ -117,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         stores.update(found)
         unlocated += missing
 
+    finish_products(products)
     buckets: list[dict] = [{} for _ in range(BUCKETS)]
     for code, product in products.items():
         buckets[bucket_of(code)][code] = product

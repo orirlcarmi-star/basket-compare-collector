@@ -1,4 +1,4 @@
-from collector.publish import bucket_of, chain_products, chain_stores
+from collector.publish import bucket_of, chain_products, chain_stores, finish_products
 
 READY = {
     "groups": [{"id": "g1", "stores": ["1", "2"], "base": {"milk": "7.35", "tomato": "11.90"}}],
@@ -67,3 +67,52 @@ def test_store_numbers_match_with_or_without_leading_zeros():
     products: dict = {}
     chain_products("shufersal", ready, products)
     assert products["milk"]["c"]["shufersal"]["s"] == ["shufersal:71"]
+
+
+def _ready_with(name, quantity="", unit="", maker=""):
+    return dict(
+        READY,
+        products={
+            "milk": {"name": name, "quantity": quantity, "unit": unit, "manufacturer": maker}
+        },
+    )
+
+
+def test_one_barcode_in_two_chains_shows_the_clearest_name():
+    products: dict = {}
+    chain_products("ramilevi", _ready_with("חלב 3%"), products)
+    chain_products("shufersal", _ready_with("חלב טרה 3% בקרטון 1 ליטר"), products)
+    chain_products("osherad", _ready_with("חלב 3% 1 ל..."), products)
+    assert products["milk"]["n"] == "חלב טרה 3% בקרטון 1 ליטר"
+    # and the other way round
+    products = {}
+    chain_products("shufersal", _ready_with("חלב טרה 3% בקרטון 1 ליטר"), products)
+    chain_products("ramilevi", _ready_with("חלב 3%"), products)
+    assert products["milk"]["n"] == "חלב טרה 3% בקרטון 1 ליטר"
+
+
+def test_a_missing_size_or_maker_is_filled_in_from_another_chain():
+    products: dict = {}
+    chain_products("ramilevi", _ready_with("חלב 3%"), products)
+    chain_products("shufersal", _ready_with("חלב", "1.00", "ליטר", "תנובה"), products)
+    assert (products["milk"]["q"], products["milk"]["u"]) == ("1.00", "ליטר")
+    assert products["milk"]["_m"] == "תנובה"
+
+
+def test_finished_products_carry_facts_and_what_the_package_holds():
+    products: dict = {}
+    chain_products("shufersal", _ready_with("חלב דל לקטוז 1% תנובה 1.5 ליטר"), products)
+    chain_products("shufersal", dict(READY, products={}), products)
+    finish_products(products)
+    milk, tomato = products["milk"], products["tomato"]
+    assert milk["a"] == {"f": "1", "b": "תנובה"}
+    assert milk["z"] == ["1.5", "l"]
+    assert "_m" not in milk
+    assert "a" not in tomato and "z" not in tomato  # nothing found, nothing written
+
+
+def test_a_size_from_the_chain_fields_is_used_when_the_name_has_none():
+    products: dict = {}
+    chain_products("shufersal", _ready_with("חלב טרי", "0.50", "ליטר"), products)
+    finish_products(products)
+    assert products["milk"]["z"] == ["0.5", "l"]
