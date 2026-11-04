@@ -78,3 +78,29 @@ def test_deals_travel_with_the_chain_files_and_with_yesterdays_state():
     daily = text("daily.yml")
     assert "ready stores.json last_run.json deals" in daily  # to the publish job
     assert "$chain/deals" in daily  # and into the state kept in the release
+
+
+def test_the_hourly_update_is_off_until_it_is_approved():
+    hourly = text("hourly.yml")
+    active = [line for line in hourly.splitlines() if not line.lstrip().startswith("#")]
+    assert not any(line.strip().startswith("schedule:") for line in active)
+    assert not any("cron:" in line for line in active)
+    assert "# schedule:" in hourly and '#   - cron: "7 4-21 * * *"' in hourly  # ready to switch on
+    assert "workflow_dispatch:" in hourly  # but can be started by hand to try it
+
+
+def test_the_hourly_update_shares_the_lock_and_the_checks_of_the_daily_run():
+    hourly = text("hourly.yml")
+    assert "group: daily-update" in hourly  # never overlaps the daily run
+    assert "collector.daily hourly-gate" in hourly and "collector.hourly" in hourly
+    assert "collector.publish $CHAINS --compact" in hourly  # the same exact restore check
+    chains = re.search(r"chain: \[([^\]]*)\]", hourly)[1].replace(" ", "").split(",")
+    assert chains == CHAINS
+    assert hourly.count("contents: write") == 1 and "issues:" not in hourly
+    assert "inputs.dry_run != true" in hourly.split("Replace the release files")[1].split("env:")[0]
+
+
+def test_the_hourly_cron_when_switched_on_covers_the_israeli_day_in_both_seasons():
+    cron = re.search(r'# {3}- cron: "(\d+) (\d+)-(\d+) \* \* \*"', text("hourly.yml"))
+    first, last = int(cron[2]), int(cron[3])
+    assert first <= 4 and last >= 20  # 07:00 at UTC+3 .. 23:00 at UTC+3 (and UTC+2: 05..21)

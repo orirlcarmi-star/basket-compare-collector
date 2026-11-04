@@ -1,19 +1,22 @@
-"""Sort products into 13 general categories by the words in their names (build task B).
+"""Sort products into 14 general categories by the words in their names (build task B).
 
-A rule is a list of words or phrases. A trailing * lets the word continue ("גבינ*" matches
-גבינה, גבינת, גבינות). Words are compared in the normal form of collector.textnorm, so
+A rule is a word or a phrase. A trailing * lets the word continue ("גבינ*" matches גבינה,
+גבינת, גבינות); a leading ^ means "only as the first word" ("^לבן" is the dairy drink, not
+"שוקולד לבן" or "יין לבן"). Words are compared in the normal form of collector.textnorm, so
 "קוטג'", vowel points, final letters and abbreviations such as "גב." (גבינה) are handled.
 
 How a category is chosen:
-1. Strong words decide wherever they stand: "קפוא*" (frozen), baby words. "עוף קפוא" is
-   frozen, not meat; "מגבוני לחות לתינוק" is for babies, not hygiene.
+0. Words in NEVER make the whole name unclassified, whatever else it says.
+1. Strong words decide wherever they stand: "קפוא*" (frozen), baby words, pet words.
+   "עוף קפוא" is frozen, not meat; "פאוץ לה קט סלמון" is cat food, not fish.
 2. Otherwise the word that comes first wins, because Israeli names start with the thing
    itself: "מיץ תפוזים" is a drink (not fruit), "חטיף בטעם גבינה" a snack (not dairy),
-   "עוגת גבינה" a pastry. When two rules match at the same place, the one listed first wins,
-   so a more specific phrase ("סבון כלים") is listed before its general word ("סבון").
+   "עוגת גבינה" a pastry. When two rules match at the same place, the longer phrase wins
+   ("סבון כלים" over "סבון"), then the rule listed first.
 3. Nothing matches: no category (None). Those names go to a list for a person to read, and
-   the rules are completed from it. A wrong category is worse than none, so a rule is only
-   added for words that mean one thing.
+   the rules are completed from it. A wrong category is worse than none: when a word can mean
+   two things ("טחון" is ground meat, ground cumin, ground coffee) it is only used inside a
+   phrase that says which ("בשר טחון").
 
 Run `python -m collector.categories <chain> --data data` for the share classified and the
 names that were not.
@@ -25,6 +28,7 @@ import sys
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from collector.textnorm import normalize
@@ -50,555 +54,178 @@ CATEGORIES = (
     Category("hygiene", "היגיינה וטיפוח"),
     Category("baby", "תינוקות"),
     Category("home", "בית"),
+    Category("pets", "חיות מחמד"),
 )
 
-# --- 1. words that decide wherever they stand -------------------------------------------
+
+def _words(text: str) -> tuple[str, ...]:
+    """Rules are written as comma-separated phrases: easy to read, one place to add a word."""
+    return tuple(part.strip() for part in text.replace("\n", " ").split(",") if part.strip())
+
+
+# --- 0. names that are never given a category ---------------------------------------------
+# Words of make-up and nail products, and of lip products. They are kept out of every rule,
+# so that a word like "שמן" or "מסיר" in such a name cannot send it to the wrong category.
+
+NEVER = _words(
+    """שפתיים, שפתון, קוטיקולה, נייל, לק, עפרון, מסקרה, איפור, מייקאפ, גלוס, סומק, אודם, ריסים"""
+)
+
+# --- 1. words that decide wherever they stand --------------------------------------------
 
 STRONG: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "frozen",
-        (
-            "קפוא*",
-            "מוקפא*",
-            "גלידה",
-            "גלידת",
-            "גלידות",
-            "קרטיב*",
-            "שלגון*",
-            "ארטיק*",
-            "ג'לאטו",
-            "סורבה",
-        ),
-    ),  # fmt: skip
+        _words("""קפוא*, מוקפא*, גלידה, גלידת, גלידות, קרטיב*, שלגון*, ארטיק*, ג'לאטו, סורבה"""),
+    ),
     (
         "baby",
-        (
-            "חיתול*",
-            "חיתולי*",
-            "מטרנה",
-            "סימילאק",
-            "נוטרילון",
-            "תמל",
-            "תחליף חלב אם",
-            "תינוק*",
-            "לתינוק*",  # "for the baby": the letter ל is part of the word
-            "פעוט*",
-            "לפעוט*",
-            "מוצץ",
-            "מוצצים",
-            "פורמולה",
-            "האגיס",
-            "פמפרס",
-            "גרבר",
-            "מחית פירות",
-            "מחית ירקות",
+        _words(
+            """חיתול*, חיתולי*, מטרנה, סימילאק, נוטרילון, תמל, תחליף חלב אם, תינוק*, לתינוק*,
+            פעוט*, לפעוט*, מוצץ, מוצצים, פורמולה, האגיס, פמפרס, גרבר, מחית פירות, מחית ירקות"""
         ),
-    ),  # fmt: skip
+    ),  # not "בייבי": there are baby carrots and baby spinach
+    (
+        "pets",
+        _words(
+            """לחתול*, לכלב*, חתולים, חתול, כלבים, כלב, לה קט, וויסקס, ויסקס, פדיגרי, שבא,
+            פרוליין, פריסקיז, רויאל קנין, דוג, פט פוד, לחיות מחמד"""
+        ),
+    ),  # "קט" alone is also KitKat, so only the phrase "לה קט" counts
 )
 
-# --- 2. the first word wins; on a tie the earlier line wins -----------------------------
+# --- 2. the first word wins; the longer phrase wins a tie; then the rule listed first ----
 
 RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    # specific phrases first, so that they beat the general word that begins them
+    # Phrases first: they must beat the general word that begins them.
     (
         "hygiene",
-        (
-            "מרכך שיער",
-            "סבון גוף",
-            "סבון ידיים",
-            "סבון נוזלי",
-            "קרם ידיים",
-            "קרם גוף",
-            "קרם פנים",
-            "קרם הגנה",
-            "קרם לחות",
-            "קרם גילוח",
+        _words(
+            """מרכך שיער, מסכה לשיער, מסכת שיער, שמן לשיער, שמן שיער, סבון גוף, סבון ידיים,
+            סבון נוזלי, קרם ידיים, קרם גוף, קרם פנים, קרם הגנה, קרם לחות, קרם לילה, קרם יום,
+            קרם עיניים, קרם רגליים, קרם גילוח, קרם שיזוף, ספריי לשיער, ג'ל לשיער, ג'ל רחצה,
+            שמן גוף, שמן עיסוי, ג'ל לחות, משחת שיניים, משחה לשיניים, מברשת שיניים, חוט דנטלי,
+            מי פה, צמר גפן, מקלוני אוזניים"""
         ),
-    ),  # fmt: skip
-    ("cleaning", ("סבון כלים", "מרכך כביסה", "מרכך*", "נוזל כלים", "נוזל לכלים")),
-    (
-        "pantry",
-        (
-            "מרק*",
-            "ממרח*",
-            "חומוס*",
-            "טחינה",
-            "אבקת אפיה",
-            "אבקת אפייה",
-            "אבקת פודינג",
-            "קורנפלקס",
-            "דגנ*",
-            "שמן",
-            "שמנים",
-            "רוטב*",
-            "קמח*",
-            "סוכר",
-            "מלח",
-            "אורז*",
-            "פסטה",
-            "ספגטי",
-            "פנה",
-            "פוסילי",
-            "מקרוני",
-            "אטריות",
-            "קוסקוס",
-            "פתיתים",
-            "בורגול",
-            "קינואה",
-            "גרנולה",
-            "קוואקר",
-            "שיבולת*",
-            "עדשים",
-            "שעועית",
-            "חומץ",
-            "קטשופ",
-            "מיונז",
-            "חרדל",
-            "ריבה",
-            "דבש",
-            "סילאן",
-            "שימורי*",
-            "שימורים",
-            "תירס",
-            "אפונה",
-            "זיתים",
-            "חמוצים",
-            "מלפפונים חמוצים",
-            "טונה",
-            "סרדינ*",
-            "פולי",
-            "רסק*",
-            "תבלין*",
-            "תבלינים",
-            "פפריקה",
-            "כמון",
-            "קינמון",
-            "אגוז*",
-            "שקדים",
-            "קשיו",
-            "פקאן",
-            "צימוקים",
-            "פירות יבשים",
-            "תמרים",
-            "שמרים",
-            "וניל",
-            "פודינג",
-            "ג'לי",
-            "עמילן",
-            "פירורי לחם",
-            "פירורי",
-            "קרקר*",
-            "טורטיות",
-            "ממתיק",
-            "סוכרזית",
-            "קטניות",
-            "גרגרי חומוס",
-            "קוקוס",
-            "פלפל שחור",
-            "פלפל לבן",
-            "חמאת בוטנים",
-        ),
-    ),  # fmt: skip
-    (
-        "snacks",
-        (
-            "שוקולד*",
-            "ממתק*",
-            "ממתקים",
-            "סוכריות",
-            "סוכריה",
-            "מסטיק",
-            "חטיף*",
-            "ציפס",
-            "תפוציפס",
-            "במבה",
-            "ביסלי",
-            "דוריטוס",
-            "פופקורן",
-            "פרלינים",
-            "פרליני",
-            "וופל*",
-            "עוגיות",
-            "עוגיית",
-            "ביסקוויט*",
-            "חלווה",
-            "מרציפן",
-            "גומי",
-            "מרשמלו",
-            "נשנושי*",
-            "בוטנים",
-            "גרעינים",
-            "פיסטוק",
-            "פתי בר",
-            "קליק",
-            "מקופלת",
-            "לוקשים",
-            "אבקת שוקולד",
-            "בייגלה",
-            "קראנץ",
-            "קינדר",
-            "טופי",
-            "קרמל",
-            "סוכריות על מקל",
-        ),
-    ),  # fmt: skip
-    (
-        "dairy",
-        (
-            "חלב",
-            "גבינ*",
-            "קוטג",
-            "שמנת",
-            "יוגורט*",
-            "לבן",
-            "לבנה",
-            "אשל",
-            "קפיר",
-            "חמאה",
-            "מרגרינה",
-            "ביצים",
-            "ביצה",
-            "מוצרלה",
-            "עמק",
-            "צהובה",
-            "בולגרית",
-            "פטה",
-            "ריקוטה",
-            "קממבר",
-            "גאודה",
-            "פרמזן",
-            "מעדן*",
-            "מילקי",
-            "שוקו",
-            "צפתית",
-            "קצוטה",
-            "נפולאון",
-            "ברי",
-            "מסקרפונה",
-            "אמנטל",
-            "חלומי",
-            "לאבנה",
-            "סקי",
-        ),
-    ),  # fmt: skip
-    (
-        "meat",
-        (
-            "עוף",
-            "חזה",
-            "כנפיים",
-            "שוק",
-            "פרגית",
-            "פרגיות",
-            "שניצל*",
-            "נקניק*",
-            "נקניקיות",
-            "קבב",
-            "המבורגר*",
-            "בקר",
-            "בשר",
-            "סטייק*",
-            "אנטריקוט",
-            "צלי",
-            "כבד",
-            "לבבות",
-            "הודו",
-            "אווז",
-            "ברווז",
-            "כבש",
-            "טלה",
-            "סינטה",
-            "אסאדו",
-            "שייטל",
-            "קציצות",
-            "פסטרמה",
-            "סלמי",
-            "שווארמה",
-            "קורנביף",
-            "טחון",
-            "צוואר",
-            "צלעות",
-            "אונטריב",
-            "נתחי",
-            "פרגיות",
-            "קבבים",
-            "המבורגרים",
-            "מדליוני",
-        ),
-    ),  # fmt: skip
-    (
-        "fish",
-        (
-            "דג",
-            "דגים",
-            "סלמון",
-            "פורל",
-            "אמנון",
-            "מושט",
-            "לוקוס",
-            "דניס",
-            "קרפיון",
-            "הרינג",
-            "פילה דג",
-            "נסיכת הנילוס",
-            "אינטיאס",
-            "טונה טרייה",
-        ),
-    ),  # fmt: skip
-    (
-        "produce",
-        (
-            "ירק*",
-            "ירקות",
-            "פירות",
-            "פרי",
-            "תפוח*",
-            "תפוז*",
-            "בננה",
-            "בננות",
-            "עגבני*",
-            "מלפפון*",
-            "גזר",
-            "בצל*",
-            "שום",
-            "תפוד",
-            "פלפל*",
-            "חסה",
-            "כרוב*",
-            "ברוקולי",
-            "אבוקדו",
-            "לימון*",
-            "אשכולית*",
-            "ענבים",
-            "אבטיח",
-            "מלון",
-            "תות*",
-            "אפרסק*",
-            "שזיף*",
-            "נקטרינה",
-            "קישוא*",
-            "חציל*",
-            "דלעת",
-            "בטטה",
-            "פטרוזיליה",
-            "כוסברה",
-            "נענע",
-            "שמיר",
-            "פטריות",
-            "שרי",
-            "אגס*",
-            "קלמנטינה",
-            "מנדרינה",
-            "רימון*",
-            "אננס",
-            "מנגו",
-            "פפאיה",
-            "קיווי",
-            "סלק",
-            "צנון",
-            "צנונית",
-            "קולורבי",
-            "כרובית",
-            "עירית",
-            "תרד",
-            "עלי חסה",
-            "עלי תרד",
-            "עלי גפן",
-            "פומלה",
-            "פומלית",
-            "תאנים",
-            "דובדבנים",
-            "משמש",
-            "אפרסמון",
-            "שסק",
-            "תמר*",
-            "ג'ינג'ר",
-            "זנגביל",
-            "נבטים",
-            "חמניות טריות",
-        ),
-    ),  # fmt: skip
-    (
-        "bakery",
-        (
-            "לחם",
-            "לחמנייה",
-            "לחמניות",
-            "פיתה",
-            "פיתות",
-            "חלה",
-            "חלות",
-            "בגט",
-            "באגט",
-            "בייגל",
-            "טורטייה",
-            "לאפה",
-            "עוגה",
-            "עוגת",
-            "בורקס*",
-            "מאפה",
-            "מאפים",
-            "קרואסון",
-            "רוגלך",
-            "מאפינס",
-            "דונאט",
-            "פיצה",
-            "בצק*",
-            "כיכר",
-            "טוסט",
-            "פוקצ'ה",
-            "פרוסות לחם",
-            "קמח תופח",
-        ),
-    ),  # fmt: skip
-    (
-        "drinks",
-        (
-            "מים",
-            "מינרל*",
-            "סודה",
-            "מיץ",
-            "מיצים",
-            "משקה",
-            "משקאות",
-            "קולה",
-            "פפסי",
-            "ספרייט",
-            "פאנטה",
-            "שוופס",
-            "בירה",
-            "יין",
-            "וודקה",
-            "ויסקי",
-            "ערק",
-            "ליקר",
-            "שמפניה",
-            "ברנדי",
-            "קפה",
-            "תה",
-            "נס",
-            "אספרסו",
-            "קפסולות",
-            "קקאו",
-            "לימונדה",
-            "אייס טי",
-            "אנרג'י",
-            "תרכיז",
-            "סירופ",
-            "חליטה",
-            "חליטות",
-            "נקטר",
-            "משקה אנרגיה",
-            "סיידר",
-            "ג'ין",
-            "רום",
-            "טקילה",
-            "אלכוהול",
-            "וויסקי",
-        ),
-    ),  # fmt: skip
+    ),
     (
         "cleaning",
-        (
-            "כביסה",
-            "אקונומיקה",
-            "מנקה*",
-            "ניקוי",
-            "חומר ניקוי",
-            "מסיר*",
-            "מטהר*",
-            "מבשם",
-            "מדיח*",
-            "דטרגנט",
-            "אבקת כביסה",
-            "ג'ל כביסה",
-            "מסיר שומנים",
-            "פיירי",
-            "סנו",
-            "מי כלור",
-            "כלור",
-            "חומצה",
-            "אבקת ניקוי",
-            "ספריי ניקוי",
+        _words(
+            """סבון כלים, מרכך כביסה, מרכך*, נוזל כלים, נוזל לכלים, אבקת כביסה, נוזל כביסה,
+            ג'ל כביסה, כדורי כביסה, מסיר שומנים, מסיר שומן, מסיר אבנית, מסיר כתמים,
+            מלח למדיח, טבליות למדיח, נוזל רצפות, מנקה*, מטהר אוויר, מטהרי אוויר"""
         ),
-    ),  # fmt: skip
+    ),
+    (
+        "pantry",
+        _words(
+            """אבקת*, מרק*, ממרח*, חומוס*, טחינה, קורנפלקס, דגנ*, שמן, שמנים, רוטב*, קמח*,
+            סוכר, מלח, אורז*, פסטה, ספגטי, פנה, פוסילי, מקרוני, אטריות, נודלס, קוסקוס, פתיתים,
+            בורגול, קינואה, כוסמת, סולת, פולנטה, גרנולה, קוואקר, שיבולת*, עדשים, שעועית,
+            חומץ, קטשופ, מיונז, חרדל, ריבה, דבש, סילאן, מולסה, סירופ מייפל, שימורי*, שימורים,
+            תירס, אפונה, זיתים, חמוצים, כבוש*, מלפפונים חמוצים, פלפלים חמוצים, טונה, סרדינ*,
+            סלמון משומר, רסק*, תבלין*, תבלינים, פפריקה, כמון, קינמון, קימל, כורכום, קרדמום,
+            אניס, זעפרן, אורגנו, טימין, פלפל שחור, פלפל לבן, אגוזים, אגוזי מלך, שקדים, קשיו,
+            פקאן, צימוקים, פירות יבשים, תמרים, שמרים, וניל, פודינג, ג'לי, עמילן, פירורי*,
+            טורטיות, ממתיק, סוכרזית, קטניות, גרגרי חומוס, קוקוס, חמאת בוטנים, חמאת שקדים,
+            שוקולד למריחה, נוטלה, פסטו, סלסה, אצות, נורי, ווסאבי, טריאקי, סויה, רוטב סויה,
+            סודה לשתייה, מיץ לימון, תערובת*, פירות משומרים, חלב קוקוס"""
+        ),
+    ),
+    (
+        "snacks",
+        _words(
+            """שוקולד*, ממתק*, ממתקים, סוכריות, סוכריה, מסטיק, חטיף*, חטיפי*, ציפס, תפוציפס,
+            במבה, ביסלי, דוריטוס, צ'יטוס, פופקורן, פרלינים, פרליני, וופל*, עוגיות, עוגיית,
+            ביסקוויט*, חלווה, מרציפן, גומי, מרשמלו, נשנושי*, בוטנים, גרעינים, פיסטוק, פתי בר,
+            קליק, מקופלת, לוקשים, אבקת שוקולד, בייגלה, קראנץ, קינדר, טופי, קרמל, קרקר*,
+            פריכיות, פריכית, לקריץ, אנרג'י בר, מילקה, לינדט, סניקרס, טוויקס, באונטי, אוראו,
+            קיט קט"""
+        ),
+    ),
+    (
+        "dairy",
+        _words(
+            """חלב, גבינ*, קוטג, שמנת, יוגורט*, ^לבן, לבנה, אשל, קפיר, חמאה, מרגרינה, ביצים,
+            ביצה, מוצרלה, עמק, צהובה, בולגרית, פטה, ריקוטה, קממבר, גאודה, פרמזן, מעדן*, מילקי,
+            שוקו, צפתית, קצוטה, נפולאון, ברי, מסקרפונה, אמנטל, חלומי, לאבנה, סקי, קשקבל,
+            דנונה, יופלה, מולר, אקטיביה"""
+        ),
+    ),
+    (
+        "meat",
+        _words(
+            """עוף, עופות, חזה, כנפיים, כנף, שוק, שוקיים, כרעיים, פרגית, פרגיות, שניצל*, נקניק*,
+            נקניקיות, קבב, קבבים, המבורגר*, בקר, בשר, סטייק*, אנטריקוט, צלי, כבד, לבבות עוף,
+            לבבות הודו, הודו, אווז, ברווז, כבש, טלה, סינטה, אסאדו, שייטל, קציצות, פסטרמה,
+            סלמי, שווארמה, קורנביף, בשר טחון, עוף טחון, הודו טחון, צוואר, צלעות, אונטריב,
+            נתחי, מדליוני, גולש"""
+        ),
+    ),
+    (
+        "fish",
+        _words(
+            """דג, דגים, סלמון, פורל, אמנון, מושט, לוקוס, דניס, קרפיון, הרינג, פילה דג,
+            נסיכת הנילוס, אינטיאס, טונה טרייה, בקלה, לברק, קלמארי, שרימפס, פירות ים, סורימי,
+            סרדינים טריים"""
+        ),
+    ),
+    (
+        "produce",
+        _words(
+            """ירק*, ירקות, פירות, פרי, תפוח*, תפוז*, בננה, בננות, עגבני*, מלפפון*, גזר, בצל*,
+            שום, תפוד, פלפל*, חסה, חסות, לבבות קיסר, לבבות חסה, רוקט, כרוב*, ברוקולי, אבוקדו,
+            לימון*, אשכולית*, ענבים, אבטיח, מלון, תות*, אפרסק*, שזיף*, נקטרינה, קישוא*, חציל*,
+            דלעת, בטטה, פטרוזיליה, כוסברה, נענע, שמיר, פטריות, שרי, אגס*, קלמנטינה, מנדרינה,
+            רימון*, אננס, מנגו, פפאיה, קיווי, סלק, צנון, צנונית, קולורבי, כרובית, עירית,
+            תרד, סלרי, עלי חסה, עלי תרד, עלי גפן, פומלה, פומלית, תאנים, דובדבנים, משמש,
+            אפרסמון, שסק, תמר*, ג'ינג'ר, זנגביל, נבטים, בזיליקום, עשבי תיבול"""
+        ),
+    ),
+    (
+        "bakery",
+        _words(
+            """לחם, לחמנייה, לחמניות, פיתה, פיתות, חלה, חלות, בגט, באגט, בייגל, טורטייה, לאפה,
+            עוגה, עוגת, בורקס*, מאפה, מאפים, קרואסון, רוגלך, מאפינס, דונאט, סופגנייה, פיצה,
+            בצק*, כיכר, טוסט, פוקצ'ה, פרוסות לחם, קמח תופח"""
+        ),
+    ),
+    (
+        "drinks",
+        _words(
+            """מים, מינרל*, סודה, מיץ, מיצים, משקה, משקאות, קולה, פפסי, ספרייט, פאנטה, שוופס,
+            בירה, יין, וודקה, ויסקי, ערק, ליקר, שמפניה, ברנדי, קפה, תה, נס, אספרסו, קפסולות,
+            קקאו, לימונדה, אייס טי, אנרג'י, תרכיז, סירופ, חליטה, חליטות, נקטר, סיידר,
+            מי קוקוס, ג'ין, רום, טקילה, אלכוהול, וויסקי, קוניאק, קאווה, פרוסקו, מוסקטו, קברנה,
+            מרלו, שרדונה,
+            סוביניון, רוזה, פינו, שיראז, מלבק, ריזלינג, יקב*, איזוטוני"""
+        ),
+    ),
+    (
+        "cleaning",
+        _words(
+            """כביסה, אקונומיקה, ניקוי, חומר ניקוי, מטהר*, מבשם, מדיח*, דטרגנט, פיירי, סנו, סומו,
+            פרסיל, כלור, חומצה, ספריי ניקוי, אסלה, שירותים, נוזל זכוכית, רצפות"""
+        ),
+    ),
     (
         "hygiene",
-        (
-            "שמפו",
-            "סבון*",
-            "משחת שיניים",
-            "משחה לשיניים",
-            "מברשת שיניים",
-            "דאודורנט*",
-            "ג'ל רחצה",
-            "מי פה",
-            "חוט דנטלי",
-            "גילוח",
-            "סכיני גילוח",
-            "קצף גילוח",
-            "אפטרשייב",
-            "בושם",
-            "מגבונים*",
-            "מגבוני*",
-            "פלסטרים",
-            "פלסטר",
-            "קוטנפס",
-            "ספוגיות",
-            "מקלוני אוזניים",
-            "צמר גפן",
-            "תחליב",
-            "שמן גוף",
-            "ג'ל לשיער",
-            "ג'ל לחות",
+        _words(
+            """שמפו, סבון*, דאודורנט*, מגבונים*, מגבוני*, פלסטר, פלסטרים, גילוח, סכיני גילוח,
+            קצף גילוח, אפטרשייב, בושם, תחליב, גרניה, דאו, דאב, דרמו, ניוואה, פנטן, הד אנד שולדרס,
+            האד אנד שולדרס, קולגייט, אורל בי, סנסודין, ליסטרין, ג'ילט, ספידסטיק, רקסונה,
+            קלירסיל, לחות, רול און, רולון, טיפוח, קוסמטיקה"""
         ),
-    ),  # fmt: skip
+    ),
     (
         "home",
-        (
-            "נייר טואלט",
-            "נייר מגבת",
-            "מגבות נייר",
-            "מפיות",
-            "שקיות אשפה",
-            "שקיות",
-            "נייר אפייה",
-            "נייר אפיה",
-            "נייר כסף",
-            "אלומיניום",
-            "ניילון",
-            "נרות",
-            "נר",
-            "סוללות",
-            "סוללה",
-            "נורה",
-            "נורות",
-            "צלחות",
-            "כוסות",
-            'סכו"ם',
-            "סכום",
-            "קשיות",
-            "מטליות",
-            "מטלית",
-            "ספוג*",
-            "סקוטש",
-            "מטאטא",
-            "מגב",
-            "גפרורים",
-            "מצית",
-            "כפפות",
-            "מחבת",
-            "סיר",
-            "קופסאות",
-            "קופסה",
-            "אשפה",
-            "מכסה",
-            "תבנית",
-            "תבניות",
-            "חד פעמי",
-            "חד פעמיים",
+        _words(
+            """נייר טואלט, נייר מגבת, מגבות נייר, מפיות, שקיות אשפה, שקיות, נייר אפייה, נייר אפיה,
+            נייר כסף, אלומיניום, ניילון, נרות, נר, סוללות, סוללה, נורה, נורות, צלחות, כוסות,
+            סכום, קשיות, מטליות, מטלית, ספוג*, סקוטש, מטאטא, מגב, גפרורים, מצית, כפפות,
+            מחבת, סיר, קופסאות, קופסה, אשפה, מכסה, תבנית, תבניות, חד פעמי, חד פעמיים"""
         ),
-    ),  # fmt: skip
+    ),
 )
 
 OTHER = "לא מסווג"
@@ -608,48 +235,91 @@ OTHER = "לא מסווג"
 class _Pattern:
     words: tuple[str, ...]
     prefix: bool  # the last word may continue
+    first: bool  # only as the first word of the name
 
 
 def _compile(spec: str) -> _Pattern:
+    first = spec.startswith("^")
     star = spec.endswith("*")
-    return _Pattern(tuple(normalize(spec.rstrip("*")).split()), star)
+    return _Pattern(tuple(normalize(spec.strip("^*")).split()), star, first)
 
 
-_STRONG = tuple((cat, tuple(_compile(s) for s in specs)) for cat, specs in STRONG)
-_RULES = tuple((cat, tuple(_compile(s) for s in specs)) for cat, specs in RULES)
+class _Index:
+    """Patterns found by the words of a name, so that a name is only tried against the patterns
+    that could match it (with ~600 patterns and 40,000 names the plain loop took half a minute).
+    A pattern is filed under its first word; a single word that may continue ("גבינ*") cannot be
+    looked up by that word, so those are tried against every name."""
+
+    def __init__(self, entries: list[tuple[int, str, _Pattern]]) -> None:
+        self._by_word: dict[str, list[tuple[int, str, _Pattern]]] = {}
+        self._wild: list[tuple[int, str, _Pattern]] = []
+        for entry in entries:
+            pattern = entry[2]
+            if pattern.prefix and len(pattern.words) == 1:
+                self._wild.append(entry)
+            else:
+                self._by_word.setdefault(pattern.words[0], []).append(entry)
+
+    def matches(self, tokens: list[str]) -> list[tuple[int, int, str, _Pattern]]:
+        """(position, order, category, pattern) of every pattern that matches the tokens."""
+        found = []
+        seen = set()
+        candidates = [e for t in set(tokens) for e in self._by_word.get(t, ())] + self._wild
+        for order, category, pattern in candidates:
+            if order in seen:
+                continue
+            seen.add(order)
+            position = _first_match(tokens, pattern)
+            if position is not None:
+                found.append((position, order, category, pattern))
+        return found
+
+
+def _entries(groups) -> list[tuple[int, str, _Pattern]]:
+    order = 0
+    entries = []
+    for category, specs in groups:
+        for spec in specs:
+            order += 1
+            entries.append((order, category, _compile(spec)))
+    return entries
+
+
+_NEVER = _Index(_entries([("never", NEVER)]))
+_STRONG = _Index(_entries(STRONG))
+_RULES = _Index(_entries(RULES))
 
 
 def _first_match(tokens: list[str], pattern: _Pattern) -> int | None:
     n = len(pattern.words)
-    for start in range(len(tokens) - n + 1):
+    last_start = 0 if pattern.first else len(tokens) - n
+    for start in range(last_start + 1):
         window = tokens[start : start + n]
-        if window[:-1] == list(pattern.words[:-1]) and (
-            window[-1].startswith(pattern.words[-1])
-            if pattern.prefix
-            else window[-1] == pattern.words[-1]
+        if (
+            len(window) == n
+            and window[:-1] == list(pattern.words[:-1])
+            and (
+                window[-1].startswith(pattern.words[-1])
+                if pattern.prefix
+                else window[-1] == pattern.words[-1]
+            )
         ):
             return start
     return None
 
 
+@lru_cache(maxsize=200_000)
 def categorize(name: str) -> str | None:
     """The category id for a product name, or None when no rule is sure."""
     tokens = normalize(name).split()
-    if not tokens:
+    if not tokens or _NEVER.matches(tokens):
         return None
-    for category, patterns in _STRONG:
-        if any(_first_match(tokens, p) is not None for p in patterns):
-            return category
+    strong = _STRONG.matches(tokens)
+    if strong:
+        return min(strong, key=lambda m: m[1])[2]  # the strong group listed first
     # (position of the match, fewer words last, order of the rule): the earliest word wins; at
     # the same place a longer phrase beats a single word, then the rule listed first.
-    candidates = []
-    order = 0
-    for category, patterns in _RULES:
-        for pattern in patterns:
-            order += 1
-            position = _first_match(tokens, pattern)
-            if position is not None:
-                candidates.append((position, -len(pattern.words), order, category))
+    candidates = [(pos, -len(p.words), order, cat) for pos, order, cat, p in _RULES.matches(tokens)]
     return min(candidates)[-1] if candidates else None
 
 

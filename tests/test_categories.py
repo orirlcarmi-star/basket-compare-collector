@@ -102,6 +102,38 @@ NAMES = [
     ("מטרנה שלב 2 400 גרם", "baby"),
     ("דייסה לתינוקות", "baby"),
     ("מגבונים לחים לתינוק", "baby"),
+    # --- real Shufersal names that were filed wrongly or not at all (checked on the full file) ---
+    ("פיזארו מוסקטו לבן 750מל", "drinks"),  # wine: was dairy because of "לבן"
+    ("פאוץ לה קט סלמון85גר", "pets"),  # cat food: was fish because of "סלמון"
+    ("לבבות קיסר יחידה", "produce"),  # romaine hearts: was meat
+    ("קימל טחון מחיר לפי משקל", "pantry"),  # a spice: was meat because of "טחון"
+    ('גרניה ספריי פרש 150מ"ל', "hygiene"),
+    ("דאו רול BWC אלוורה 50 מל", "hygiene"),
+    ("מסכה לשיער דרים לונג300מ", "hygiene"),
+    ('דרמו רויטליפט לחות50 מ"ל', "hygiene"),
+    # --- pets, wine and white things that are not dairy ---
+    ('אוכל לכלבים בקר 2 ק"ג', "pets"),
+    ("חול לחתולים 10 ליטר", "pets"),
+    ("יין לבן שרדונה 750 מל", "drinks"),
+    ("שוקולד לבן 100 גרם", "snacks"),
+    ('אורז לבן 1 ק"ג', "pantry"),
+    ("לבן 1.5% 500 מל", "dairy"),
+    ("קיט קט 4 אצבעות", "snacks"),  # "קט" is not a pet word on its own
+    ("שמן שמן זית", "pantry"),
+    ("בשר טחון טרי", "meat"),
+    ("קפה טחון 200 גרם", "drinks"),
+    ("עוף טחון", "meat"),
+    ("חלב קוקוס 400 מל", "pantry"),
+    ("מי קוקוס 330 מל", "drinks"),
+]
+
+# Make-up, nail and lip products are kept out of every rule: whatever else the name says, it is
+# "not classified" rather than something wrong ("שמן" is cooking oil, "מסיר" is a cleaner).
+NOT_CLASSIFIED = [
+    "שמן שפתיים למראה עסיסי11",
+    "מסיר קוטיקולה נייל סטורי",
+    "עפרון פלמפינג קוקוס",
+    "מסקרה שחורה 10 מל",
 ]
 
 
@@ -115,9 +147,15 @@ def test_unknown_words_get_no_category_not_a_wrong_one():
         assert categorize(name) is None
 
 
-def test_thirteen_general_categories():
-    assert len(CATEGORIES) == 13
-    assert len({c.id for c in CATEGORIES}) == 13
+@pytest.mark.parametrize("name", NOT_CLASSIFIED)
+def test_names_kept_out_of_the_rules_stay_unclassified(name):
+    assert categorize(name) is None
+
+
+def test_fourteen_categories():
+    assert len(CATEGORIES) == 14
+    assert len({c.id for c in CATEGORIES}) == 14
+    assert category_name("pets") == "חיות מחמד"
     assert {c.name for c in CATEGORIES} >= {"חלב וביצים", "בשר ועוף", "דגים", "ירקות ופירות"}
     assert category_name("dairy") == "חלב וביצים"
     assert category_name(None) == "לא מסווג"

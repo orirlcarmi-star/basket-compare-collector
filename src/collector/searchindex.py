@@ -1,17 +1,33 @@
-"""A search index in small files, split by the first two letters of each word (task B3).
+"""A search index in small files, split by the first two letters of each word (tasks B3, B2).
 
 The website cannot download every product name to search them, so the names are indexed:
 
-  s/<file>.json   {"<word>": ["<barcode>", ...], ...}   words that begin with the same two letters
+  s/<file>.json   {"p": [[barcode, name, category?], ...], "w": {word: [position, ...], ...}}
+
+`w` holds the words that begin with the same two letters; each word lists the positions, in `p`,
+of the products that contain it. `p` holds those products: barcode, the short name the
+shopper sees, and the category id (left out when the product has none). So one request per
+word of the query is enough to show results: no product files are read until the shopper adds
+something to the basket. (A product with several words is in several files; the name is
+repeated, which is what makes the index about four times bigger than one with barcodes only.)
 
 The file name is the two letters as four hex digits of each ("חל" -> "05d705dc"), so any letter
 is safe in a URL. Words and queries are written in the normal form of `collector.textnorm`
 (no vowel points or apostrophes, plain final letters, abbreviations such as "גב." spelled out).
 
 To search: normalise the query into words; for each word read the file of its first two letters
-and take the barcodes of every word that STARTS with it (typing "גבינ" finds גבינה, גבינות);
-keep the barcodes found for all the query words. `search` below does exactly that and is the
-reference for the website. A query word of one letter cannot be searched.
+and take the products of every word that STARTS with it (typing "גבינ" finds גבינה, גבינות);
+keep the products found for all the query words (they are in every one of those files, so the
+first file already holds what is needed to show them). `search` below does exactly that and is
+the reference for the website. A query word of one letter cannot be searched.
+
+Prefix letters. Names are written "בקרטון", "וחלב", "לתינוק", "מהדרין". Each such word is also
+indexed without its first letter, so searching "קרטון", "חלב", "תינוק" finds them. This is
+done only when it is safe, and always in addition to the word itself, never instead of it:
+the first letter must be one of ו ב ל כ ש ה מ, what is left must be at least three letters,
+and it must be a word the catalog really uses on its own ("בקר" is beef and is not "קר", cold;
+"בננה" is not "ננה"; "כלב" is not "לב"). Words chains write only with a prefix, such as
+"מהדרין", are listed in EXTRA_STEMS.
 """
 
 import json
@@ -21,6 +37,10 @@ from pathlib import Path
 from collector.textnorm import words
 
 PREFIX = 2
+PREFIX_LETTERS = "ובלכשהמ"
+MIN_STEM = 3
+# Stems that chains write with a prefix letter and rarely without one.
+EXTRA_STEMS = {"הדרינ"}  # מהדרין, normal form (final letter plain)
 
 
 def file_name(word: str) -> str:
@@ -28,19 +48,44 @@ def file_name(word: str) -> str:
     return "".join(f"{ord(c):04x}" for c in word[:PREFIX]) + ".json"
 
 
-def build_index(names: Mapping[str, str]) -> dict[str, dict[str, list[str]]]:
-    """barcode -> product name  ->  {file name: {word: [barcodes]}}."""
+def stems(word: str, vocabulary: set[str]) -> list[str]:
+    """The word without its prefix letter, when that is safe (see the module text)."""
+    if word[0] not in PREFIX_LETTERS:
+        return []
+    rest = word[1:]
+    if len(rest) >= MIN_STEM and (rest in vocabulary or rest in EXTRA_STEMS):
+        return [rest]
+    return []
+
+
+def build_index(products: Mapping[str, tuple[str, str | None]]) -> dict[str, dict]:
+    """barcode -> (name, category id or None)  ->  {file name: {"p": [...], "w": {...}}}."""
+    searchable = {code: words(name) for code, (name, _) in products.items()}
+    vocabulary = {w for ws in searchable.values() for w in ws}
     postings: dict[str, set[str]] = {}
-    for code, name in names.items():
-        for word in set(words(name)):
-            postings.setdefault(word, set()).add(code)
-    files: dict[str, dict[str, list[str]]] = {}
+    for code, ws in searchable.items():
+        for word in ws:
+            for form in [word, *stems(word, vocabulary)]:
+                postings.setdefault(form, set()).add(code)
+
+    files: dict[str, dict] = {}
+    positions: dict[str, dict[str, int]] = {}  # file -> barcode -> place in "p"
     for word in sorted(postings):
-        files.setdefault(file_name(word), {})[word] = sorted(postings[word])
+        name = file_name(word)
+        content = files.setdefault(name, {"p": [], "w": {}})
+        place = positions.setdefault(name, {})
+        entry = []
+        for code in sorted(postings[word]):
+            if code not in place:
+                place[code] = len(content["p"])
+                text, category = products[code]
+                content["p"].append([code, text, category] if category else [code, text])
+            entry.append(place[code])
+        content["w"][word] = entry
     return files
 
 
-def write_index(index: Mapping[str, Mapping[str, list[str]]], folder: Path) -> list[Path]:
+def write_index(index: Mapping[str, Mapping], folder: Path) -> list[Path]:
     folder.mkdir(parents=True, exist_ok=True)
     written = []
     for name, content in index.items():
@@ -50,15 +95,23 @@ def write_index(index: Mapping[str, Mapping[str, list[str]]], folder: Path) -> l
     return written
 
 
-def search(folder: Path, query: str) -> set[str] | None:
-    """Barcodes of products having every word of the query (None: nothing to search for)."""
-    query_words = words(query)
-    if not query_words:
-        return None
-    found: set[str] | None = None
-    for word in query_words:
+def search(folder: Path, query: str) -> dict[str, tuple[str, str | None]] | None:
+    """barcode -> (name, category id or None) of the products having every word of the query
+    (None: nothing to search for)."""
+    found: dict[str, tuple[str, str | None]] | None = None
+    for word in words(query):
         path = folder / file_name(word)
-        content = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        matches = {code for w, codes in content.items() if w.startswith(word) for code in codes}
-        found = matches if found is None else found & matches
+        content = (
+            json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"p": [], "w": {}}
+        )
+        matches = {
+            content["p"][i][0]: (
+                content["p"][i][1],
+                content["p"][i][2] if len(content["p"][i]) > 2 else None,
+            )
+            for w, places in content["w"].items()
+            if w.startswith(word)
+            for i in places
+        }
+        found = matches if found is None else {c: v for c, v in found.items() if c in matches}
     return found

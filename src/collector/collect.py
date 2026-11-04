@@ -9,6 +9,7 @@ One store's failure is reported and skipped; it never stops the rest.
 """
 
 import argparse
+import json
 import sys
 import time
 from collections.abc import Callable, Iterable
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from collector.deals import usable_deals
 from collector.encoding import decode_price_file
-from collector.files import file_date, kind_of, latest_per_store
+from collector.files import file_date, file_stamp, kind_of, latest_per_store, same_store
 from collector.parse import parse_price_file, parse_promo_file, parse_stores_file
 from collector.sources import cerberus, shufersal
 from collector.store_output import to_json, write_record
@@ -60,12 +61,16 @@ def _write_chain(
     )
 
     failures = deal_count = 0
+    applied: dict[
+        str, str
+    ] = {}  # store -> stamp of the full price file taken in (for collector.hourly)
     for count, (store, name) in enumerate(sorted(price_files.items()), start=1):
         if limit is not None and count > limit:
             break
         try:
             parsed = parse_price_file(decode_price_file(download(name)))
             write_record(chain_dir / "prices" / f"{store}.json", parsed)
+            applied[same_store(store)] = file_stamp(name)
             if store in promo_files:
                 promos = parse_promo_file(decode_price_file(download(promo_files[store])))
                 deals, _ = usable_deals(promos, israel_now())
@@ -77,6 +82,7 @@ def _write_chain(
         except Exception as error:  # one bad file must not stop the run
             failures += 1
             print(f"  store {store}: FAILED {type(error).__name__}: {error}", file=sys.stderr)
+    (chain_dir / "applied.json").write_text(json.dumps(applied, sort_keys=True), encoding="utf-8")
     print(f"{chain_dir.name}: {deal_count:,} usable deals in total")
     return failures
 

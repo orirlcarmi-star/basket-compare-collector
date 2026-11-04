@@ -182,7 +182,7 @@ def test_site_files_carry_category_facts_unit_contents_and_a_search_index(two_ch
     assert len(review.read_text(encoding="utf-8").splitlines()) == 500  # all named, none sorted
 
     categories = json.loads((two_chains / "v2" / "categories.json").read_text(encoding="utf-8"))
-    assert len(categories) == 13 and categories[0] == {"id": "dairy", "name": "חלב וביצים"}
+    assert len(categories) == 14 and categories[0] == {"id": "dairy", "name": "חלב וביצים"}
 
     # the index finds a product by its barcode word and by "ליטר"
     code = next(iter(fake_ready(1)["products"]))

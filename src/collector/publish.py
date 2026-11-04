@@ -279,7 +279,8 @@ def main(argv: list[str] | None = None) -> int:
     for old in (args.out / "s").glob("*.json"):  # words of products that are gone
         old.unlink()
     index_files = write_index(
-        build_search_index({code: p["n"] for code, p in products.items()}), args.out / "s"
+        build_search_index({code: (p["n"], p.get("k")) for code, p in products.items()}),
+        args.out / "s",
     )
     index_sizes = [f.stat().st_size for f in index_files]
     unclassified = sorted((p["n"], code) for code, p in products.items() if "k" not in p)

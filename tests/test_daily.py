@@ -212,3 +212,75 @@ def test_israel_time_zone_is_available_on_every_computer():
     winter = utc("2026-01-15T12:00").astimezone(jerusalem)
     summer = utc("2026-07-15T12:00").astimezone(jerusalem)
     assert (winter.utcoffset().total_seconds(), summer.utcoffset().total_seconds()) == (7200, 10800)
+
+
+# --- the hourly update: 07:00-23:59 Israel, only after today's full update ---
+
+
+@pytest.mark.parametrize(
+    ("now", "full", "go"),
+    [
+        ("2026-11-04T05:00", "2026-11-04T04:20", True),  # 07:00 winter, full update done today
+        (
+            "2026-11-04T04:59",
+            "2026-11-04T04:20",
+            False,
+        ),  # 06:59: the morning belongs to the daily run
+        ("2026-11-04T21:30", "2026-11-04T04:20", True),  # 23:30
+        ("2026-11-04T22:00", "2026-11-04T04:20", False),  # 00:00 next day
+        (
+            "2026-11-04T10:00",
+            "2026-11-03T04:20",
+            False,
+        ),  # the full update of yesterday is not enough
+        ("2026-11-04T10:00", None, False),  # nothing published yet
+        ("2026-07-15T04:00", "2026-07-15T03:20", True),  # summer: 07:00
+        ("2026-07-15T03:00", "2026-07-15T03:20", False),  # summer: 06:00
+    ],
+)
+def test_hourly_gate(now, full, go):
+    from collector.daily import should_run_hourly
+
+    meta = (
+        {"updated_at": "2026-11-04T04:20:00Z", "full_updated_at": f"{full}:00Z"} if full else None
+    )
+    assert should_run_hourly("schedule", utc(now), meta)[0] is go
+
+
+def test_hourly_gate_uses_the_full_update_time_not_the_last_update_and_allows_manual_runs():
+    from collector.daily import should_run_hourly
+
+    # an hourly update at 09:00 today does not make an old full update count as today's
+    meta = {"updated_at": "2026-11-04T07:00:00Z", "full_updated_at": "2026-11-03T04:20:00Z"}
+    assert not should_run_hourly("schedule", utc("2026-11-04T08:00"), meta)[0]
+    assert should_run_hourly("workflow_dispatch", utc("2026-11-04T08:00"), None)[0]
+    # a meta file from before this field existed: its update time is the full update
+    old = {"updated_at": "2026-11-04T04:20:00Z"}
+    assert should_run_hourly("schedule", utc("2026-11-04T08:00"), old)[0]
+
+
+def test_the_hourly_update_keeps_the_full_update_time_and_unchanged_is_not_a_problem(
+    day, tmp_path, capsys
+):
+    data, site = day
+    make_chain(data, "quiet", result="nothing new")
+    meta = make_meta(data, ["good", "quiet"], site, utc("2026-11-04T09:00"), "2026-11-04T04:20:00Z")
+    assert meta["updated_at"] == "2026-11-04T09:00:00Z"
+    assert meta["full_updated_at"] == "2026-11-04T04:20:00Z"
+    assert meta["chains"]["quiet"]["status"] == "unchanged"
+    assert problems_in(meta, "success", "success") == []
+    # the daily run sets both to the same time
+    assert make_meta(data, ["good"], site, utc("2026-11-04T04:20"))["full_updated_at"] == (
+        "2026-11-04T04:20:00Z"
+    )
+
+    old = tmp_path / "old.json"
+    old.write_text(json.dumps({"updated_at": "x", "full_updated_at": "2026-11-04T04:20:00Z"}))
+    args = ["meta", "--data", str(data), "--site", str(site), "--out", str(tmp_path / "m.json")]
+    daily_main([*args, "--carry-full-from", str(old), "quiet"])
+    assert (
+        capsys.readouterr().out.strip() == "any_updated=false"
+    )  # only "unchanged": nothing to publish
+    assert json.loads((tmp_path / "m.json").read_text("utf-8"))["full_updated_at"] == (
+        "2026-11-04T04:20:00Z"
+    )
