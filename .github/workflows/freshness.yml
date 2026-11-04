@@ -6,11 +6,15 @@ name: Freshness check
 on:
   schedule:
     - cron: "41 */6 * * *"
+    # Catch-up slots: every hour from 05:23 to 19:23 UTC (07:23 to 21:23 in winter, one hour later
+    # in summer). Many slots, because GitHub may drop some: one that fires is enough.
+    - cron: "23 5-19 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
   issues: write
+  actions: write # to start the daily run when the morning run did not happen
 
 jobs:
   freshness:
@@ -46,3 +50,23 @@ jobs:
             gh issue close "$existing" --comment "הנתונים עודכנו, הבעיה נפתרה."
           fi
           exit 0
+
+      - name: Start the daily run if the morning one did not publish
+        # The daily run is scheduled, and GitHub sometimes does not start scheduled runs. From 07:00
+        # to 22:59 in Israel, when nothing was published today, no daily run is waiting or running
+        # and none was started in the last two hours (so a failing run is not repeated every
+        # hour), start it here. The daily run's own gate checks again.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          go=$(python -m collector.daily catch-up --meta meta.json | grep -o 'run=.*' | cut -d= -f2)
+          busy=$(gh run list --workflow daily.yml --json status --jq '[.[] | select(.status != "completed")] | length')
+          last=$(gh run list --workflow daily.yml --limit 1 --json createdAt --jq '.[0].createdAt // empty')
+          recent=0
+          if [ -n "$last" ] && [ $(( $(date +%s) - $(date -d "$last" +%s) )) -lt 7200 ]; then recent=1; fi
+          if [ "$go" = "true" ] && [ "${busy:-0}" = "0" ] && [ "$recent" = "0" ]; then
+            echo "Nothing was published today: starting the daily run"
+            gh workflow run daily.yml
+          else
+            echo "No catch-up (needed: $go, daily runs waiting or running: ${busy:-0}, started in the last 2 hours: $recent)"
+          fi

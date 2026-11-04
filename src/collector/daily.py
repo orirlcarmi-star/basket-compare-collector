@@ -4,6 +4,8 @@ The workflows (.github/workflows/daily.yml, freshness.yml) only run commands; wh
 decide is here:
 
   hourly-gate  The same for the hourly update (07:00-23:59 in Israel, after today's full update).
+  catch-up Did the morning run not publish today? (07:00-22:59 in Israel: the freshness check
+           then starts the daily run itself.)
   gate     Is it time to run? The schedule fires at 03:00 and 04:00 UTC because Israel is
            UTC+3 in summer and UTC+2 in winter, and GitHub cannot schedule in a time zone.
            A scheduled run goes ahead only when it is 06:00-07:59 in Israel and today's
@@ -29,7 +31,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ISRAEL = ZoneInfo("Asia/Jerusalem")
-RUN_HOURS = (6, 7)  # Israel clock hours in which a scheduled run may start
+RUN_HOURS = (6, 7, 8)  # Israel clock hours in which a scheduled run may start (8: a late retry)
+CATCH_UP_HOURS = range(7, 23)  # when the freshness check may start a missed daily run
 HOURLY_HOURS = range(7, 24)  # Israel clock hours of the hourly update (07:00 to 23:59)
 MAX_AGE = timedelta(hours=36)
 
@@ -47,11 +50,13 @@ def read_meta(path: Path) -> dict | None:
         return None
 
 
-def should_run(event: str, now: datetime, last_updated: datetime | None) -> tuple[bool, str]:
+def should_run(
+    event: str, now: datetime, last_updated: datetime | None, hours=RUN_HOURS
+) -> tuple[bool, str]:
     if event != "schedule":
         return True, f"started by hand ({event or 'no event'})"
     local = now.astimezone(ISRAEL)
-    if local.hour not in RUN_HOURS:
+    if local.hour not in hours:
         return False, f"{local:%H:%M} in Israel: not the morning run"
     if last_updated and last_updated.astimezone(ISRAEL).date() == local.date():
         return False, f"already updated today ({last_updated.astimezone(ISRAEL):%H:%M})"
@@ -191,11 +196,12 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawTextHelpFormatter
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("gate", "hourly-gate", "chains", "meta", "issue", "stale"):
+    for name in ("gate", "catch-up", "hourly-gate", "chains", "meta", "issue", "stale"):
         command = sub.add_parser(name)
         command.add_argument("--now", help="ISO time instead of the clock (tests)")
     sub.choices["gate"].add_argument("--event", default="")
     sub.choices["gate"].add_argument("--meta", type=Path, default=Path("meta.json"))
+    sub.choices["catch-up"].add_argument("--meta", type=Path, default=Path("meta.json"))
     sub.choices["hourly-gate"].add_argument("--event", default="")
     sub.choices["hourly-gate"].add_argument("--meta", type=Path, default=Path("meta.json"))
     sub.choices["chains"].add_argument("--data", type=Path, default=Path("data"))
@@ -218,6 +224,13 @@ def main(argv: list[str] | None = None) -> int:
         meta = read_meta(args.meta)
         last = parse_time(meta["updated_at"]) if meta and "updated_at" in meta else None
         go, reason = should_run(args.event, now, last)
+        print(f"run={'true' if go else 'false'}")
+        print(f"reason={reason}", file=sys.stderr)
+        return 0
+    if args.command == "catch-up":
+        meta = read_meta(args.meta)
+        last = parse_time(meta["updated_at"]) if meta and "updated_at" in meta else None
+        go, reason = should_run("schedule", now, last, CATCH_UP_HOURS)
         print(f"run={'true' if go else 'false'}")
         print(f"reason={reason}", file=sys.stderr)
         return 0

@@ -5,11 +5,14 @@ name: Daily update
 # the fixed release "site-data-latest". What each step decides is in src/collector/daily.py.
 #
 # GitHub schedules in UTC only. Israel is UTC+3 in summer and UTC+2 in winter, so the run is
-# scheduled at both 03:00 and 04:00 UTC; the "gate" job lets exactly one of them work.
+# scheduled at 03:xx and 04:xx UTC; the "gate" job lets exactly one of them work.
 on:
   schedule:
-    - cron: "0 3 * * *"
-    - cron: "0 4 * * *"
+    # Not on the round hour: GitHub delays or drops scheduled runs at the start of every hour (the
+    # runs at 03:00 and 04:00 UTC of 2026-11-04 never started). Six tries in the morning; the gate
+    # lets only the first one that finds nothing published today do the work. If GitHub drops
+    # them all, the freshness check starts the daily run itself (see freshness.yml).
+    - cron: "7,37 3-5 * * *"
   workflow_dispatch:
     inputs:
       limit:
@@ -29,6 +32,7 @@ concurrency:
 
 env:
   RELEASE: site-data-latest
+  PYTHONUNBUFFERED: "1" # so the log of a running step shows what it is doing
 
 jobs:
   gate:
@@ -81,6 +85,7 @@ jobs:
             echo "no state for $CHAIN yet (first run)"
           fi
       - name: Collect
+        timeout-minutes: 120 # a hang must not hold the runner for the job's four hours
         continue-on-error: true # a failed store must not stop the build; the sanity checks judge
         env:
           CHAIN: ${{ matrix.chain }}
