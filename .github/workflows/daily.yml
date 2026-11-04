@@ -32,6 +32,7 @@ concurrency:
 
 env:
   RELEASE: site-data-latest
+  PYTHONUNBUFFERED: "1" # so the log of a running step shows what it is doing
 
 jobs:
   gate:
@@ -84,6 +85,7 @@ jobs:
             echo "no state for $CHAIN yet (first run)"
           fi
       - name: Collect
+        timeout-minutes: 120 # a hang must not hold the runner for the job's four hours
         continue-on-error: true # a failed store must not stop the build; the sanity checks judge
         env:
           CHAIN: ${{ matrix.chain }}

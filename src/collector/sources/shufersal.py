@@ -60,9 +60,13 @@ def list_all(category: int, store_id: int = 0) -> list[FileLink]:
     links: list[FileLink] = []
     first = fetch(list_url(category, store_id)).decode("utf-8", errors="replace")
     links += parse_file_links(first)
-    for page in range(2, min(last_page(first), _MAX_PAGES) + 1):
+    pages = min(last_page(first), _MAX_PAGES)
+    print(f"  shufersal list, category {category}: {pages} pages", flush=True)
+    for page in range(2, pages + 1):
         html_page = fetch(list_url(category, store_id, page)).decode("utf-8", errors="replace")
         links += parse_file_links(html_page)
+        if page % 5 == 0 or page == pages:
+            print(f"  shufersal list, category {category}: page {page}/{pages}", flush=True)
     return links
 
 
