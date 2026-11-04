@@ -176,6 +176,15 @@ NAMES = [
     ("חומץ תפוחים 1 ליטר", "pantry"),
     ("פריגת קליר בטעם אננס1.5ל", "drinks"),
     ("קליר שמפו נגד קשקשים", "hygiene"),
+    # --- round 3 (real names): laundry and dishwasher capsules are not coffee capsules ---
+    ("קפסולות XXL לכביסה60 LU", "cleaning"),
+    ("אריאל קפסולות לכביסה44יח", "cleaning"),
+    ("קפסולות גל למדיח30יXPO", "cleaning"),
+    ("קפסולות גל לכביסה30יXPO", "cleaning"),
+    ("קפסולות פיניש קוואנטום60", "cleaning"),
+    ("קפסולות קפה נספרסו 10 יחידות", "drinks"),  # coffee capsules stay drinks
+    ("נספרסו קפסולות אספרסו", "drinks"),
+    ("קפסולות דולצ'ה גוסטו לטה", "drinks"),
 ]
 
 # Make-up, nail and lip products are kept out of every rule: whatever else the name says, it is
@@ -197,7 +206,7 @@ def test_category_of_a_chain_style_name(name, category):
 
 
 def test_unknown_words_get_no_category_not_a_wrong_one():
-    for name in ["", "   ", "מארז מתנה", "מוצר 12345", "XYZ"]:
+    for name in ["", "   ", "מארז מתנה", "מוצר 12345", "XYZ", "קפסולות"]:
         assert categorize(name) is None
 
 
