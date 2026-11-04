@@ -125,6 +125,31 @@ NAMES = [
     ("עוף טחון", "meat"),
     ("חלב קוקוס 400 מל", "pantry"),
     ("מי קוקוס 330 מל", "drinks"),
+    # --- real Shufersal names that were still wrong or unclassified (6 stores, ~9,000 products) ---
+    ("ספרינג מנגו בננה1.5 ליטר", "drinks"),  # fruit + a volume: a drink, not produce
+    ("פריגת קליר בטעם אננס1.5ל", "drinks"),
+    ("שוקו.חלב אוורירי100ג פפה", "snacks"),  # milk chocolate in short: was dairy
+    ("שו.חלב לוז לגרנד150לינדט", "snacks"),
+    ("ש.חלב עם פיסטוק קלוי100ג", "snacks"),
+    ("סקיטלס בטעם פירות 152 גר", "snacks"),  # "flavoured with fruit" is not fruit
+    ("אבקת הלבנה רן 350ג", "cleaning"),  # laundry whitener: was pantry
+    ("קלינקס", "hygiene"),
+    ("ניוטרוגינה", "hygiene"),
+    ("פרינגלס", "snacks"),
+    ("אורביט", "snacks"),
+    ("אוכמניות", "produce"),
+    ("שאבלי", "drinks"),
+    ("חמאת בוטנים", "pantry"),
+    # --- the same rules on neighbours: nothing that worked must break ---
+    ("תפוח עץ אדום", "produce"),
+    ('לימון 1 ק"ג', "produce"),  # a weight, not a volume: still fruit
+    ("מיץ תפוזים 1 ליטר", "drinks"),
+    ("שוקו בשקית 1 ליטר", "dairy"),  # a bare "שוקו" is the chocolate milk drink
+    ("שוקולד חלב 100 גרם", "snacks"),
+    ("יוגורט בטעם תות 200 גרם", "dairy"),  # flavoured yoghurt is yoghurt
+    ("חטיף בטעם גבינה", "snacks"),
+    ("גלידה בטעם וניל 1 ליטר", "frozen"),
+    ("תה בטעם לימון 25 שקיות", "drinks"),
 ]
 
 # Make-up, nail and lip products are kept out of every rule: whatever else the name says, it is
@@ -134,6 +159,9 @@ NOT_CLASSIFIED = [
     "מסיר קוטיקולה נייל סטורי",
     "עפרון פלמפינג קוקוס",
     "מסקרה שחורה 10 מל",
+    "טמפונים 16 יחידות",  # left unclassified, like the others in this list
+    "או בה נורמל",
+    "קרפרי",
 ]
 
 

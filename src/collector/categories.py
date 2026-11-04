@@ -13,7 +13,11 @@ How a category is chosen:
    itself: "מיץ תפוזים" is a drink (not fruit), "חטיף בטעם גבינה" a snack (not dairy),
    "עוגת גבינה" a pastry. When two rules match at the same place, the longer phrase wins
    ("סבון כלים" over "סבון"), then the rule listed first.
-3. Nothing matches: no category (None). Those names go to a list for a person to read, and
+3. "בטעם ..." (flavoured with) is not the product: everything from "בטעם" on is ignored
+   ("סקיטלס בטעם פירות" is a sweet, not fruit; "יוגורט בטעם תות" is still dairy).
+4. A fruit or vegetable named together with a volume (ליטר, מ"ל) is a drink, not produce:
+   "ספרינג מנגו בננה 1.5 ליטר". Fresh produce is sold by weight or by the unit.
+5. Nothing matches: no category (None). Those names go to a list for a person to read, and
    the rules are completed from it. A wrong category is worse than none: when a word can mean
    two things ("טחון" is ground meat, ground cumin, ground coffee) it is only used inside a
    phrase that says which ("בשר טחון").
@@ -31,6 +35,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from collector.attributes import VOLUME, size_from_name
 from collector.textnorm import normalize
 
 
@@ -112,7 +117,7 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "cleaning",
         _words(
             """סבון כלים, מרכך כביסה, מרכך*, נוזל כלים, נוזל לכלים, אבקת כביסה, נוזל כביסה,
-            ג'ל כביסה, כדורי כביסה, מסיר שומנים, מסיר שומן, מסיר אבנית, מסיר כתמים,
+            ג'ל כביסה, כדורי כביסה, מסיר שומנים, מסיר שומן, מסיר אבנית, מסיר כתמים, אבקת הלבנה,
             מלח למדיח, טבליות למדיח, נוזל רצפות, מנקה*, מטהר אוויר, מטהרי אוויר"""
         ),
     ),
@@ -140,7 +145,7 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             ביסקוויט*, חלווה, מרציפן, גומי, מרשמלו, נשנושי*, בוטנים, גרעינים, פיסטוק, פתי בר,
             קליק, מקופלת, לוקשים, אבקת שוקולד, בייגלה, קראנץ, קינדר, טופי, קרמל, קרקר*,
             פריכיות, פריכית, לקריץ, אנרג'י בר, מילקה, לינדט, סניקרס, טוויקס, באונטי, אוראו,
-            קיט קט"""
+            קיט קט, סקיטלס, מנטוס, טיק טק, אורביט, פרינגלס, פררו, רפאלו, טופיפי, פסק זמן, מארס"""
         ),
     ),
     (
@@ -179,7 +184,8 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             דלעת, בטטה, פטרוזיליה, כוסברה, נענע, שמיר, פטריות, שרי, אגס*, קלמנטינה, מנדרינה,
             רימון*, אננס, מנגו, פפאיה, קיווי, סלק, צנון, צנונית, קולורבי, כרובית, עירית,
             תרד, סלרי, עלי חסה, עלי תרד, עלי גפן, פומלה, פומלית, תאנים, דובדבנים, משמש,
-            אפרסמון, שסק, תמר*, ג'ינג'ר, זנגביל, נבטים, בזיליקום, עשבי תיבול"""
+            אפרסמון, שסק, אוכמניות, אוכמנית, פטל, דומדמניות, תמר*,
+            ג'ינג'ר, זנגביל, נבטים, בזיליקום, עשבי תיבול"""
         ),
     ),
     (
@@ -197,14 +203,16 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             בירה, יין, וודקה, ויסקי, ערק, ליקר, שמפניה, ברנדי, קפה, תה, נס, אספרסו, קפסולות,
             קקאו, לימונדה, אייס טי, אנרג'י, תרכיז, סירופ, חליטה, חליטות, נקטר, סיידר,
             מי קוקוס, ג'ין, רום, טקילה, אלכוהול, וויסקי, קוניאק, קאווה, פרוסקו, מוסקטו, קברנה,
-            מרלו, שרדונה,
+            מרלו, שרדונה, שאבלי, בורדו, בורגונדי, קיאנטי, טמפרניו, ספרינג, פריגת, קליר,
+            פרימור,
             סוביניון, רוזה, פינו, שיראז, מלבק, ריזלינג, יקב*, איזוטוני"""
         ),
     ),
     (
         "cleaning",
         _words(
-            """כביסה, אקונומיקה, ניקוי, חומר ניקוי, מטהר*, מבשם, מדיח*, דטרגנט, פיירי, סנו, סומו,
+            """כביסה, הלבנה, אקונומיקה, ניקוי, חומר ניקוי, מטהר*, מבשם, מדיח*, דטרגנט, פיירי, סנו,
+            סומו,
             פרסיל, כלור, חומצה, ספריי ניקוי, אסלה, שירותים, נוזל זכוכית, רצפות"""
         ),
     ),
@@ -214,7 +222,7 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             """שמפו, סבון*, דאודורנט*, מגבונים*, מגבוני*, פלסטר, פלסטרים, גילוח, סכיני גילוח,
             קצף גילוח, אפטרשייב, בושם, תחליב, גרניה, דאו, דאב, דרמו, ניוואה, פנטן, הד אנד שולדרס,
             האד אנד שולדרס, קולגייט, אורל בי, סנסודין, ליסטרין, ג'ילט, ספידסטיק, רקסונה,
-            קלירסיל, לחות, רול און, רולון, טיפוח, קוסמטיקה"""
+            קלירסיל, קלינקס, טישו, ממחטות, ניוטרוגינה, לחות, רול און, רולון, טיפוח, קוסמטיקה"""
         ),
     ),
     (
@@ -312,6 +320,8 @@ def _first_match(tokens: list[str], pattern: _Pattern) -> int | None:
 def categorize(name: str) -> str | None:
     """The category id for a product name, or None when no rule is sure."""
     tokens = normalize(name).split()
+    if "בטעמ" in tokens[1:]:  # "flavoured with": what follows is not the product
+        tokens = tokens[: tokens.index("בטעמ", 1)]
     if not tokens or _NEVER.matches(tokens):
         return None
     strong = _STRONG.matches(tokens)
@@ -320,7 +330,14 @@ def categorize(name: str) -> str | None:
     # (position of the match, fewer words last, order of the rule): the earliest word wins; at
     # the same place a longer phrase beats a single word, then the rule listed first.
     candidates = [(pos, -len(p.words), order, cat) for pos, order, cat, p in _RULES.matches(tokens)]
-    return min(candidates)[-1] if candidates else None
+    if not candidates:
+        return None
+    category = min(candidates)[-1]
+    if category == "produce":
+        size = size_from_name(name)
+        if size is not None and size.kind == VOLUME:
+            return "drinks"  # fruit named with a volume: a juice or a soft drink
+    return category
 
 
 def category_name(category_id: str | None) -> str:
