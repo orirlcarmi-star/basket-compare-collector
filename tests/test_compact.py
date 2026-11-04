@@ -247,3 +247,23 @@ def test_facets_over_the_growth_limit_are_left_out_with_a_warning(two_chains, ca
     record = search_records(two_chains / "v2" / "s", f"מוצר {code}")[code]
     assert record == [code, f"מוצר {code} 1 ליטר"]  # exactly the shape from before
     assert "Facets left out" in capsys.readouterr().err
+
+
+def test_the_largest_file_counts_too(two_chains, monkeypatch):
+    """The limit is checked on the whole index and on its largest file: either one over, and the
+    facets are left out."""
+    monkeypatch.setattr(publish, "MAX_FACET_GROWTH", 10.0)
+    assert run_publish(two_chains, "probe", "--compact") == 0
+    stats = json.loads((two_chains / "probe" / "stats.json").read_text(encoding="utf-8"))
+    total, largest = (
+        stats["search_facets_growth_percent"],
+        stats["search_facets_largest_growth_percent"],
+    )
+    assert stats["search_facets"] is True and total > 0 and largest > 0
+    if total == largest:
+        return  # nothing to tell the two apart on this sample
+    limit = (min(total, largest) + max(total, largest)) / 2 / 100  # between the two
+    monkeypatch.setattr(publish, "MAX_FACET_GROWTH", limit)
+    assert run_publish(two_chains, "between", "--compact") == 0
+    stats = json.loads((two_chains / "between" / "stats.json").read_text(encoding="utf-8"))
+    assert stats["search_facets"] is False and "Facets left out" in stats["warnings"][0]

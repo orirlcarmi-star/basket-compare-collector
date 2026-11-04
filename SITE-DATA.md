@@ -179,16 +179,26 @@ without reading up to 60 product files, a record may carry **facets** in a fourt
   are not copied.
 - `collector.searchindex.search_records` returns the whole record; the older `search` returns `(name, category)` as before.
 
-**Size.** The facets are a fixed few bytes per record, so the relative growth depends on how long the names are. Measured
-on invented catalogs of 59,446 products (67% with some facet): index 13.7 MB -> 16.5 MB (**+20%**, gzipped +7%), largest
-file 1.17 MB -> 1.48 MB (+27%) with names of about 30 characters; with names of 14-24 characters the growth is 32-39%
-(real chain names are about 24 characters long, so the real figure is near the limit). If every product had all three
-facets it would be +56%. The real size could not be measured here (no access to the chains' data).
+**Size, measured on the real data of the first run** (the published package of 2026-11-04, three chains: Rami Levy,
+Osher Ad and Yochananof; 39,423 products, 18.7 characters per name on average; 89% of the products have some facet):
 
-**The product owner's limit is +30%.** `publish` therefore measures the growth on the real data in every run (it builds the
-index both ways): up to 30% the facets are written; above it they are **left out**, the files stay exactly as before,
-and a warning is written to `stats.json` / `meta.json` (`search_facets`, `search_facets_growth_percent`, `warnings`) and
-to the daily issue.
+| | without facets | with facets | growth |
+|---|---|---|---|
+| all 630 files | 9,432,619 bytes | 12,093,204 bytes | **+28.2%** |
+| the largest file | 219,208 bytes | 290,055 bytes | **+32.3%** |
+| all files, gzipped | 2,425,596 bytes | 2,646,962 bytes | +9.1% |
+| the largest file, gzipped | 55,132 bytes | 59,921 bytes | +8.7% |
+
+The facets are a fixed few bytes per record, so the relative growth depends on how long the names are (invented catalogs:
+about +20% with names of 30 characters, 32-39% with names of 14-24 characters; if every product had all three facets,
++56%). The package did not yet contain Shufersal; its names are longer, which lowers the percentage.
+
+**The product owner's limit is +30%.** Measured on the raw files, the whole index is under it (+28.2%) and its largest file
+just over (+32.3%); gzipped, which is what the browser downloads, both are under 10%. `publish` therefore measures the
+growth **on the real data in every run** (it builds the index both ways, and compares the total and the largest file):
+if either is above 30% the facets are **left out**, the files stay exactly as before, and a warning is written to
+`stats.json` / `meta.json` (`search_facets`, `search_facets_growth_percent`, `search_facets_largest_growth_percent`,
+`warnings`) and to the daily issue. To accept the larger growth, raise `MAX_FACET_GROWTH` in `publish.py`.
 
 #### Options if the facets are too big
 1. *A shorter form* (smallest change for the site): one string instead of the object, e.g. `"3|1l|"` for fat 3, one litre,

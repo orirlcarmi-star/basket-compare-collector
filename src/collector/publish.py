@@ -44,13 +44,14 @@ from collector.files import same_store
 from collector.locate import apply_manual, load_manual
 from collector.names import better_name
 from collector.searchindex import build_index as build_search_index
-from collector.searchindex import facets_of, index_size, write_index
+from collector.searchindex import facets_of, file_sizes, index_size, write_index
 from collector.sitedeals import build_chain_deals, load_store_deals
 from collector.unitprice import contents
 
 BUCKETS = 8192
-# The facets added to the search records (fat, size, weight) may make the index this much bigger
-# (decided by the product owner). More than that and they are left out, with a warning.
+# The facets added to the search records (fat, size, weight) may make the index, and its largest
+# file, this much bigger (decided by the product owner). More than that and they are left out,
+# with a warning.
 MAX_FACET_GROWTH = 0.30
 # Cloudflare Pages takes at most 20,000 files in one deployment. The run fails above this many,
 # leaving room for growth, so a package the host would refuse is never published.
@@ -186,25 +187,28 @@ def attach_deals(
     return written, references, skipped
 
 
-def search_with_facets(products: dict) -> tuple[dict, float, bool, str | None]:
-    """The search index with the facets, unless they would make it more than MAX_FACET_GROWTH
-    bigger: then the plain index and a warning. Also returns the growth that was measured."""
+def search_with_facets(products: dict) -> tuple[dict, dict, str | None]:
+    """The search index with the facets, unless they would make the index, or its largest file,
+    more than MAX_FACET_GROWTH bigger: then the plain index and a warning.
+
+    Returns (index, {"kept": bool, "total": growth, "largest": growth}, warning or None)."""
     plain = build_search_index({code: (p["n"], p.get("k")) for code, p in products.items()})
     rich = build_search_index(
         {code: (p["n"], p.get("k"), facets_of(p)) for code, p in products.items()}
     )
-    growth = index_size(rich) / max(index_size(plain), 1) - 1
-    if growth <= MAX_FACET_GROWTH:
-        return rich, growth, True, None
+    total = index_size(rich) / max(index_size(plain), 1) - 1
+    largest = max(file_sizes(rich), default=0) / max(max(file_sizes(plain), default=1), 1) - 1
+    growth = {"kept": max(total, largest) <= MAX_FACET_GROWTH, "total": total, "largest": largest}
+    if growth["kept"]:
+        return rich, growth, None
     return (
         plain,
         growth,
-        False,
         "נתוני הצמצום (שומן, גודל, משקל) לא נכנסו לאינדקס החיפוש: הם היו מגדילים אותו ב-"
-        f"{growth:.0%}, מעל המגבלה ({MAX_FACET_GROWTH:.0%}). צריך להחליט איך לצמצם "
-        '(SITE-DATA.md, סעיף "Search", "Options if the facets are too big").\n'
-        f"Facets left out of the search index: they would make it {growth:.0%} bigger, over the "
-        f"limit of {MAX_FACET_GROWTH:.0%}.",
+        f"{total:.0%} (והקובץ הגדול ב-{largest:.0%}), מעל המגבלה ({MAX_FACET_GROWTH:.0%}). "
+        "צריך להחליט איך לצמצם (SITE-DATA.md, סעיף Search, Options if the facets are too big).\n"
+        f"Facets left out of the search index: they would make it {total:.0%} bigger (its largest "
+        f"file {largest:.0%}), over the limit of {MAX_FACET_GROWTH:.0%}.",
     )
 
 
@@ -303,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     write_json(args.out / "categories.json", [{"id": c.id, "name": c.name} for c in CATEGORIES])
     for old in (args.out / "s").glob("*.json"):  # words of products that are gone
         old.unlink()
-    search_index, facet_growth, facets_kept, facet_warning = search_with_facets(products)
+    search_index, facet_growth, facet_warning = search_with_facets(products)
     warnings: list[str] = [facet_warning] if facet_warning else []
     index_files = write_index(search_index, args.out / "s")
     index_sizes = [f.stat().st_size for f in index_files]
@@ -324,8 +328,9 @@ def main(argv: list[str] | None = None) -> int:
             "search_files": len(index_files),
             "search_bytes": sum(index_sizes),
             "search_largest_bytes": max(index_sizes, default=0),
-            "search_facets": facets_kept,
-            "search_facets_growth_percent": round(100 * facet_growth, 1),
+            "search_facets": facet_growth["kept"],
+            "search_facets_growth_percent": round(100 * facet_growth["total"], 1),
+            "search_facets_largest_growth_percent": round(100 * facet_growth["largest"], 1),
             "warnings": warnings,
             "deal_files": len(deal_files),
             "deal_bytes": sum(f.stat().st_size for f in deal_files),

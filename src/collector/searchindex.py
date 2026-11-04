@@ -116,12 +116,17 @@ def build_index(products: Mapping[str, tuple]) -> dict[str, dict]:
     return files
 
 
-def index_size(index: Mapping[str, Mapping]) -> int:
-    """Bytes the index files would take (what write_index writes)."""
-    return sum(
+def file_sizes(index: Mapping[str, Mapping]) -> list[int]:
+    """Bytes each index file would take (what write_index writes)."""
+    return [
         len(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         for content in index.values()
-    )
+    ]
+
+
+def index_size(index: Mapping[str, Mapping]) -> int:
+    """Bytes all the index files would take together."""
+    return sum(file_sizes(index))
 
 
 def write_index(index: Mapping[str, Mapping], folder: Path) -> list[Path]:
