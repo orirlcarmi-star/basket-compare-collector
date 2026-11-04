@@ -6,7 +6,7 @@ other name field the file may have (ManufacturerItemDescription), and prints a f
 If most names are exactly the same length, the chain cut them; if the other field is longer, we
 could use it.
 
-    python -m collector.namecheck ramilevi osherad yohananof
+    python -m collector.namecheck ramilevi osherad yohananof   (or the manual Collect, which runs it for its chain)
 """
 
 import sys
