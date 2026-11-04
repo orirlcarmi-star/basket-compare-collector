@@ -152,13 +152,6 @@ def test_an_expired_link_to_a_file_that_is_no_longer_listed_is_an_error():
         sh.download(link(NAME, "old"), 2, 413, listing=lambda *a: [link("other")], getter=getter)
 
 
-def test_the_newest_file_of_a_store_is_chosen():
-    older = link("PriceFull7290027600007-001-413-20261103-030000")
-    newer = link("PriceFull7290027600007-001-413-20261104-030000")
-    assert sh.latest_link(2, 413, listing=lambda *a: [older, newer]) == newer
-    assert sh.latest_link(2, 413, listing=lambda *a: []) is None
-
-
 STORES_XML = (
     "<Root><ChainID>7290027600007</ChainID><SubChains><SubChain><SubChainID>1</SubChainID><Stores>"
     + "".join(
@@ -168,6 +161,7 @@ STORES_XML = (
     )
     + "</Stores></SubChain></SubChains></Root>"
 )
+TODAY = datetime.now(UTC).strftime("%Y%m%d")
 
 
 def price_xml(store):
@@ -178,80 +172,169 @@ def price_xml(store):
     )
 
 
-@pytest.fixture
-def fake_site(monkeypatch):
-    """Shufersal's site: listings per store with signed links, and links that expire after use."""
-    events, dead = [], set()
-    now_name = datetime.now(UTC).strftime("%Y%m%d")
+def file_name(kind, store, day=None, time="030000"):
+    return f"{kind}7290027600007-001-{store}-{day or TODAY}-{time}"
 
-    def list_all(category, store_id=0):
-        events.append(("list", category, store_id))
-        if category == sh.CATEGORY_STORES:
-            return [link(f"Stores7290027600007-000-{now_name}-020", "s")]
-        kind = "PriceFull" if category == sh.CATEGORY_PRICE_FULL else "PromoFull"
-        old = link(f"{kind}7290027600007-001-{store_id:03d}-20200101-030000", f"old{store_id}")
-        new = link(f"{kind}7290027600007-001-{store_id:03d}-{now_name}-030000", f"new{store_id}")
-        return [old, new]
 
-    def fetch(url, timeout=60):
-        events.append(("get", url))
-        if "?sig=" in url and url.split("sig=")[1] in dead:
+class FakeSite:
+    """Shufersal's site: the listing in pages, links that can be made to expire, and a log of every
+    request in the order it was made."""
+
+    def __init__(self, monkeypatch):
+        self.events = []
+        self.listings = {}  # category -> list of pages (each a list of file names)
+        self.dead = set()  # links (the part after sig=) that answer "expired"
+        self.issued = 0
+        monkeypatch.setattr(sh, "pages", self.pages)
+        monkeypatch.setattr(sh, "list_all", self.list_all)
+        monkeypatch.setattr(sh, "fetch", self.fetch)
+
+    def new_link(self, name):
+        self.issued += 1
+        return sh.FileLink(name=name, url=f"https://blob/{name}.gz?sig=t{self.issued}")
+
+    def pages(self, category, store_id=0):
+        pages = self.listings.get(category, [[]])
+        for number, names in enumerate(pages, start=1):
+            self.events.append(("page", category, number))  # runs only when the page is asked for
+            yield [self.new_link(n) for n in names]
+
+    def list_all(self, category, store_id=0):
+        self.events.append(("relist", category, store_id))
+        return [link for page in self.pages_quiet(category) for link in page]
+
+    def pages_quiet(self, category):
+        return [[self.new_link(n) for n in names] for names in self.listings.get(category, [[]])]
+
+    def fetch(self, url, timeout=60):
+        self.events.append(("get", url.split("/")[-1].split(".gz")[0]))
+        if "sig=" in url and url.split("sig=")[1] in self.dead:
             raise http_error(403, EXPIRED)
-        if "Stores" in url:
+        if url.startswith("https://blob/Stores"):
             return STORES_XML.encode()
         store = int(url.split("-001-")[1][:3])
-        kind = "price" if "PriceFull" in url else "promo"
-        return (price_xml(store) if kind == "price" else "<Root><Promotions/></Root>").encode()
-
-    monkeypatch.setattr(sh, "list_all", list_all)
-    monkeypatch.setattr(sh, "fetch", fetch)
-    return events, dead
+        return (price_xml(store) if "PriceFull" in url else "<Root><Promotions/></Root>").encode()
 
 
-def test_each_store_is_listed_and_downloaded_before_the_next_one(fake_site, tmp_path):
-    events, _ = fake_site
+@pytest.fixture
+def site(monkeypatch):
+    fake = FakeSite(monkeypatch)
+    fake.listings[sh.CATEGORY_STORES] = [[f"Stores7290027600007-000-{TODAY}-020"]]
+    return fake
+
+
+def price_pages(site, *pages):
+    site.listings[sh.CATEGORY_PRICE_FULL] = [
+        [file_name("PriceFull", s) for s in page] for page in pages
+    ]
+
+
+def steps(site, kind="PriceFull"):
+    """The page requests and the downloads of one kind of file, in the order they were made."""
+    return [
+        ("page" if e[0] == "page" else "get")
+        for e in site.events
+        if (e[0] == "page" and e[1] == sh.CATEGORY_PRICE_FULL) or (e[0] == "get" and kind in e[1])
+    ]
+
+
+def test_the_files_of_a_page_are_downloaded_before_the_next_page_is_asked_for(site, tmp_path):
+    price_pages(site, ("002", "413"), ("071",))
     assert collect.collect_shufersal(tmp_path, None) == 0
-    kinds = [e[0] for e in events]
-    assert kinds[:2] == ["list", "get"]  # the stores file: list it, download it at once
-    # after that: list price, get price, list promo, get promo - store by store, never all listings
-    per_store = events[2:]
-    assert [e[0] for e in per_store] == ["list", "get", "list", "get"] * 3
-    assert [e[2] for e in per_store if e[0] == "list"][::2] == [2, 413, 71]  # sorted by store id
-    # every price file is written, under the store's own number
-    assert sorted(p.name for p in (tmp_path / "shufersal" / "prices").glob("*.json")) == [
-        "2.json", "413.json", "71.json",
-    ]  # fmt: skip
+    # page 1, its two files, page 2, its file: never a page request between a link and its file
+    assert steps(site) == ["page", "get", "get", "page", "get"]
+    prices = sorted(p.name for p in (tmp_path / "shufersal" / "prices").glob("*.json"))
+    assert prices == ["002.json", "071.json", "413.json"]
     applied = json.loads((tmp_path / "shufersal" / "applied.json").read_text(encoding="utf-8"))
     assert sorted(applied) == ["2", "413", "71"]
 
 
-def test_an_old_file_is_not_taken_and_an_expired_link_is_renewed(fake_site, tmp_path, monkeypatch):
-    events, dead = fake_site
-    dead.add("new413")  # the first link read for store 413 will have expired
+def test_listing_requests_do_not_grow_with_the_number_of_stores(site, tmp_path):
+    few = [("002", "413", "071")]
+    many = [tuple(f"{n:03d}" for n in range(1, 21))]  # one page, twenty stores
+    counts = []
+    for page in (few, many):
+        site.events.clear()
+        price_pages(site, *page)
+        assert collect.collect_shufersal(tmp_path / str(len(page[0])), None) == 0
+        counts.append(sum(1 for e in site.events if e[0] in ("page", "relist")))
+    # the stores file, the price page and the promotion page: the same for 3 and for 20 stores
+    assert counts[0] == counts[1] == 3
 
-    original = sh.list_all
 
-    def list_all(category, store_id=0):
-        links = original(category, store_id)
-        if (
-            store_id == 413
-            and category == sh.CATEGORY_PRICE_FULL
-            and sum(1 for e in events if e == ("list", category, 413)) == 2
-        ):
-            dead.discard("new413")  # the second listing gives a link that works
-        return links
-
-    monkeypatch.setattr(sh, "list_all", list_all)
+def test_a_newer_file_on_a_later_page_replaces_an_older_one_and_not_the_other_way(site, tmp_path):
+    older = file_name("PriceFull", "002", time="010000")
+    newer = file_name("PriceFull", "002", time="050000")
+    site.listings[sh.CATEGORY_PRICE_FULL] = [[older], [newer], [older]]
     assert collect.collect_shufersal(tmp_path, None) == 0
-    gets_for_413 = [
-        e[1] for e in events if e[0] == "get" and "PriceFull" in e[1] and "-413-" in e[1]
+    got = [e[1] for e in site.events if e[0] == "get" and "PriceFull" in e[1]]
+    assert got == [older, newer]  # the older one on the third page is not downloaded again
+    applied = json.loads((tmp_path / "shufersal" / "applied.json").read_text(encoding="utf-8"))
+    assert applied == {"2": f"{TODAY}050000"}
+
+
+def test_files_older_than_a_week_are_not_taken(site, tmp_path):
+    site.listings[sh.CATEGORY_PRICE_FULL] = [
+        [file_name("PriceFull", "002"), file_name("PriceFull", "413", day="20200101")]
     ]
-    assert len(gets_for_413) == 2  # the expired link, then the renewed one
+    assert collect.collect_shufersal(tmp_path, None) == 0
+    assert [p.name for p in (tmp_path / "shufersal" / "prices").glob("*.json")] == ["002.json"]
+
+
+def test_an_expired_link_is_renewed_once_with_a_listing_of_that_store(site, tmp_path, monkeypatch):
+    name = file_name("PriceFull", "413")
+    price_pages(site, ("413",))
+    first = {"done": False}
+    original = site.fetch
+
+    def fetch(url, timeout=60):
+        if name in url and not first["done"]:
+            first["done"] = True
+            site.events.append(("get", name))
+            raise http_error(403, EXPIRED)
+        return original(url, timeout)
+
+    monkeypatch.setattr(sh, "fetch", fetch)
+    # the store-filtered listing the renewal asks for
+    site.listings[sh.CATEGORY_PRICE_FULL] = [[name]]
+    assert collect.collect_shufersal(tmp_path, None) == 0
+    assert [e for e in site.events if e[0] == "get" and name in e[1]] == [("get", name)] * 2
+    assert sum(1 for e in site.events if e[0] == "relist") == 1  # one renewal, no more
     assert (tmp_path / "shufersal" / "prices" / "413.json").exists()
 
 
-def test_the_limit_counts_stores_and_leaves_the_rest_alone(fake_site, tmp_path):
-    events, _ = fake_site
-    assert collect.collect_shufersal(tmp_path, 1) == 0
-    assert [p.name for p in (tmp_path / "shufersal" / "prices").glob("*.json")] == ["2.json"]
-    assert [e for e in events if e[0] == "list" and e[2] not in (0, 2)] == []  # others not asked
+def test_promotions_are_taken_only_for_stores_with_prices(site, tmp_path):
+    price_pages(site, ("002", "413"))
+    site.listings[sh.CATEGORY_PROMO_FULL] = [
+        [file_name("PromoFull", s) for s in ("002", "071", "413")]
+    ]
+    assert collect.collect_shufersal(tmp_path, None) == 0
+    deals = sorted(p.name for p in (tmp_path / "shufersal" / "deals").glob("*.json"))
+    assert deals == ["002.json", "413.json"]  # 071 has no prices, so no promotion download
+    assert not [e for e in site.events if e[0] == "get" and "PromoFull" in e[1] and "-071-" in e[1]]
+
+
+def test_the_limit_stops_reading_the_listing_early(site, tmp_path):
+    price_pages(site, ("002", "413"), ("071", "100"), ("200",))
+    assert collect.collect_shufersal(tmp_path, 2) == 0
+    pages_asked = [e for e in site.events if e[0] == "page" and e[1] == sh.CATEGORY_PRICE_FULL]
+    assert len(pages_asked) == 1  # a small test run reads one page, not twenty-two
+    assert len(list((tmp_path / "shufersal" / "prices").glob("*.json"))) == 2
+
+
+def test_a_file_that_cannot_be_downloaded_is_counted_and_the_rest_are_taken(
+    site, tmp_path, monkeypatch
+):
+    price_pages(site, ("002", "413"))
+    bad = file_name("PriceFull", "002")
+    original = site.fetch
+
+    def fetch(url, timeout=60):
+        if bad in url:
+            raise http_error(403, REFUSED)  # a plain refusal: raised, not renewed
+        return original(url, timeout)
+
+    monkeypatch.setattr(sh, "fetch", fetch)
+    assert collect.collect_shufersal(tmp_path, None) == 1
+    assert [p.name for p in (tmp_path / "shufersal" / "prices").glob("*.json")] == ["413.json"]
+    assert not [e for e in site.events if e[0] == "relist"]  # no renewal for another 403

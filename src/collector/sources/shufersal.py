@@ -2,21 +2,25 @@
 
 The site lists files in an HTML table. Each row links to a gzip file on public
 cloud storage through a signed URL that expires (within minutes to hours), so a file must be
-downloaded right after its link is read. Listing everything first and downloading afterwards
-does not work: reading all the pages took 15 minutes and the first links had expired (HTTP 403
-"Server failed to authenticate the request ... signature", 2026-11-04). So: list one store's
-files, download them at once, go to the next store (`latest_link`, `download`); and when a
-download still answers with an expired signature, ask for a fresh link to the same file once.
+downloaded right after its link is read. Reading all the pages first and downloading afterwards
+does not work: reading them took 15 minutes and the first links had expired (HTTP 403 "Server
+failed to authenticate the request ... signature", 2026-11-04). Asking the site for one store at a
+time is too slow (25-35 seconds a request, two per store: about 7 hours for 417 stores).
+
+So: read the general listing page by page (`pages`), and download the files of a page at once,
+before asking for the next page (see collect.py). When a download still answers with an expired
+signature, `download` asks for a fresh link to the same file once (a listing of that store: slow,
+but it should be rare).
 """
 
 import html
 import re
+import time
 import urllib.error
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from urllib.request import Request, urlopen
 
-from collector.files import file_stamp
 from collector.retry import with_retries
 
 BASE_URL = "https://prices.shufersal.co.il"
@@ -64,19 +68,30 @@ def list_url(category: int, store_id: int, page: int = 1) -> str:
     return url if page == 1 else f"{url}&page={page}"
 
 
+def pages(category: int, store_id: int = 0) -> Iterator[list[FileLink]]:
+    """The file links of a category one page at a time (store_id 0 = all stores). A page is
+    requested only when the caller asks for the next one, so whatever the caller does with a
+    page (downloading its files) happens before the next request."""
+    started = time.monotonic()
+    first = fetch(list_url(category, store_id)).decode("utf-8", errors="replace")
+    total = min(last_page(first), _MAX_PAGES)
+    print(f"  shufersal list, category {category}: {total} pages", flush=True)
+    yield parse_file_links(first)
+    for page in range(2, total + 1):
+        html_page = fetch(list_url(category, store_id, page)).decode("utf-8", errors="replace")
+        if page % 5 == 0 or page == total:
+            minutes = (time.monotonic() - started) / 60
+            print(
+                f"  shufersal list, category {category}: page {page}/{total} "
+                f"({minutes:.1f} min since the first)",
+                flush=True,
+            )
+        yield parse_file_links(html_page)
+
+
 def list_all(category: int, store_id: int = 0) -> list[FileLink]:
     """Every file link of a category across all pages (store_id 0 = all stores)."""
-    links: list[FileLink] = []
-    first = fetch(list_url(category, store_id)).decode("utf-8", errors="replace")
-    links += parse_file_links(first)
-    pages = min(last_page(first), _MAX_PAGES)
-    print(f"  shufersal list, category {category}: {pages} pages", flush=True)
-    for page in range(2, pages + 1):
-        html_page = fetch(list_url(category, store_id, page)).decode("utf-8", errors="replace")
-        links += parse_file_links(html_page)
-        if page % 5 == 0 or page == pages:
-            print(f"  shufersal list, category {category}: page {page}/{pages}", flush=True)
-    return links
+    return [link for page in pages(category, store_id) for link in page]
 
 
 def fetch(url: str, timeout: float = 60) -> bytes:
@@ -103,13 +118,6 @@ def is_expired_signature(error: Exception) -> bool:
     except Exception:  # an unreadable answer: assume it is not the signature
         return False
     return any(word in body for word in _SIGNATURE_WORDS)
-
-
-def latest_link(category: int, store_number: int, listing=None) -> FileLink | None:
-    """The newest file of a category for one store, from a listing read right now.
-    `listing` is a stand-in for `list_all` in tests."""
-    links = (listing or list_all)(category, store_number)
-    return max(links, key=lambda link: file_stamp(link.name), default=None)
 
 
 def download(
