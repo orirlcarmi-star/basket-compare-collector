@@ -5,11 +5,14 @@ name: Daily update
 # the fixed release "site-data-latest". What each step decides is in src/collector/daily.py.
 #
 # GitHub schedules in UTC only. Israel is UTC+3 in summer and UTC+2 in winter, so the run is
-# scheduled at both 03:00 and 04:00 UTC; the "gate" job lets exactly one of them work.
+# scheduled at 03:xx and 04:xx UTC; the "gate" job lets exactly one of them work.
 on:
   schedule:
-    - cron: "0 3 * * *"
-    - cron: "0 4 * * *"
+    # Not on the round hour: GitHub delays or drops scheduled runs at the start of every hour (the
+    # runs at 03:00 and 04:00 UTC of 2026-11-04 never started). Six tries in the morning; the gate
+    # lets only the first one that finds nothing published today do the work. If GitHub drops
+    # them all, the freshness check starts the daily run itself (see freshness.yml).
+    - cron: "7,37 3-5 * * *"
   workflow_dispatch:
     inputs:
       limit:
@@ -29,11 +32,15 @@ concurrency:
 
 env:
   RELEASE: site-data-latest
+  PYTHONUNBUFFERED: "1" # so the log of a running step shows what it is doing
 
 jobs:
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # to count today's daily runs (at most three do real work in a day)
     outputs:
       run: ${{ steps.gate.outputs.run }}
     steps:
@@ -46,11 +53,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$RELEASE" --pattern meta.json --clobber || echo "no meta.json yet"
+      - name: Today's daily runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list --workflow daily.yml --limit 100 \
+            --json databaseId,status,createdAt,startedAt,updatedAt > runs.json || echo '[]' > runs.json
       - name: Is it time?
         id: gate
         env:
           EVENT: ${{ github.event_name }}
-        run: python -m collector.daily gate --event "$EVENT" --meta meta.json | tee -a "$GITHUB_OUTPUT"
+          RUN_ID: ${{ github.run_id }}
+        run: python -m collector.daily gate --event "$EVENT" --meta meta.json --runs runs.json --current-run "$RUN_ID" | tee -a "$GITHUB_OUTPUT"
 
   collect:
     needs: gate
@@ -81,6 +95,7 @@ jobs:
             echo "no state for $CHAIN yet (first run)"
           fi
       - name: Collect
+        timeout-minutes: 120 # a hang must not hold the runner for the job's four hours
         continue-on-error: true # a failed store must not stop the build; the sanity checks judge
         env:
           CHAIN: ${{ matrix.chain }}

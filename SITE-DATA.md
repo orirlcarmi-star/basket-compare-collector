@@ -24,7 +24,8 @@ Every morning the pipeline replaces the files of the release **`site-data-latest
   The reference decoder is `collector.compact.restore_prices`.
 * **Unit price** = the shopper's price ÷ `z[0]`, per `z[1]` (so 7.35 for a `["1.5","l"]` product is 4.90 per litre).
   Products with no readable size have no `z`.
-* `d/<chain>/<id>.json` — one file per deal, fetched only for the products in the basket. See "Deals" below.
+* `d/<chain>/<n>.json` — the deals of a chain in 256 bucket files, n = hash of the deal id modulo 256. A basket fetches only
+  the buckets of the deals its products mention. See "Deals" below.
 * `categories.json` — the 14 categories `{id, name}`: dairy, meat, fish, produce, bakery, pantry, snacks, drinks, frozen,
   cleaning, hygiene, baby, home and **pets (חיות מחמד, new)**. A product with no `k` is "לא מסווג". A product is left
   without a category when no rule is sure; make-up, nail and lip products are deliberately never given one.
@@ -37,11 +38,27 @@ Every morning the pipeline replaces the files of the release **`site-data-latest
 
 The old format (format 1: `publish` without `--compact`) is still available; the pipeline publishes format 2 only.
 
-## Deals (`d/<chain>/<id>.json`, format 2 only)
+## Deals (`d/<chain>/<n>.json`, format 2 only)
 
-A product's entry for a chain lists `"d": ["<id>", ...]`, the deals in which it takes part. The browser fetches
-`d/<chain>/<id>.json` for each id the basket touches. Only deals the calculator can price are published:
-"X for Y" deals and fixed prices, with no coupon and no minimum basket amount.
+A product's entry for a chain lists `"d": ["<id>", ...]`, the deals in which it takes part. **The deals of a chain are
+spread over bucket files** `d/<chain>/<n>.json`:
+
+* `n` = **FNV-1a (32 bit) of the deal id, modulo 256**. The id is the string, with its variant suffix such as `"-2"`.
+  FNV-1a is the function of the product files `p/` (offset basis `0x811C9DC5`, prime `0x01000193`, over the character
+  codes of the id), only the modulus differs (256 here, 8,192 there).
+* a file is a map `{"<deal id>": <the deal>, ...}`; the deal is the object described below, exactly as it was before the
+  buckets. The ids in a product's `"d"` list are the same ids as before.
+* a bucket with no deals has **no file**: a missing file means "no such deal".
+* the browser fetches `d/<chain>/<n>.json` for each id the basket touches (the same bucket serves many ids), looks the id
+  up in the map, and applies the deal. At most 256 files per chain: 1,024 for the four chains.
+
+To check a computation: the id `"7"` has hash 839689206, so n = 246; `"7-2"`: 2298208649, n = 137; `"4662141"`:
+845991053, n = 141; `"4662141-2"`: 3546552214, n = 150; `"4662141-3"`: 3563329833, n = 41. (Standard FNV-1a test vectors:
+`""` -> 0x811C9DC5, `"a"` -> 0xE40C292C, `"foobar"` -> 0xBF9CF968.) `collector.sitedeals.read_deal(site_dir, chain, id)` is
+the reference reader.
+
+Only deals the calculator can price are published: "X for Y" deals and fixed prices, with no coupon and no minimum basket
+amount.
 
 | Field | Meaning |
 |---|---|
@@ -64,7 +81,13 @@ and again up to `m` units in all; every other unit costs its normal price. Examp
 Basket: three units of `7290000000015` at 12.90 → at a store of price group `g1` (or at the store in position 14) the first
 two cost 20.00 together and the third 12.90: 32.90 instead of 38.70. At any other store the deal does not apply.
 
-**Variants:** a promotion id whose terms differ between stores has one file per variant: `7`, `7-2`, `7-3`... A variant
+**A bucket file** (`d/ramilevi/246.json`, holding the deal `"7"` and any other deal whose id hashes to 246):
+
+```json
+{"7":{"t":"2ב20 גבינה","q":2,"p":"20.00","m":6,"e":"2026-11-12T23:59","i":["7290000000015","7290004131074"],"s":["g1",14]}}
+```
+
+**Variants:** a promotion id whose terms differ between stores has one entry per variant: `7`, `7-2`, `7-3`... A variant
 exists only when `q`, `p`, `m`, `c` or `e` differ. The variant that applies in the most stores has the plain id.
 Different wording does not make a variant, and neither do the items: stores that sell other kinds ("2 for 13.90 on
 herbs" lists 3, 4 or 5 barcodes depending on the store) share **one** file whose `i` is all their barcodes together
@@ -193,17 +216,42 @@ The facets are a fixed few bytes per record, so the relative growth depends on h
 about +20% with names of 30 characters, 32-39% with names of 14-24 characters; if every product had all three facets,
 +56%). The package did not yet contain Shufersal; its names are longer, which lowers the percentage.
 
-**The product owner's limit is +30%.** Measured on the raw files, the whole index is under it (+28.2%) and its largest file
-just over (+32.3%); gzipped, which is what the browser downloads, both are under 10%. `publish` therefore measures the
-growth **on the real data in every run** (it builds the index both ways, and compares the total and the largest file):
-if either is above 30% the facets are **left out**, the files stay exactly as before, and a warning is written to
+**Decision of the product owner: accept the growth (option 4 below).** The limit was raised from +30% to **+45%**. Measured
+on the raw files the whole index is +28.2% and its largest file +32.3%; gzipped, which is what the browser downloads, both
+are under 10%. `publish` still measures the growth **on the real data in every run** (it builds the index both ways, and
+compares the total and the largest file): if either is above 45% the facets are **left out**, the files stay exactly as
+before, and a warning is written to
 `stats.json` / `meta.json` (`search_facets`, `search_facets_growth_percent`, `search_facets_largest_growth_percent`,
 `warnings`) and to the daily issue. To accept the larger growth, raise `MAX_FACET_GROWTH` in `publish.py`.
 
-#### Options if the facets are too big
+#### Options if the facets are too big (the owner chose 4)
 1. *A shorter form* (smallest change for the site): one string instead of the object, e.g. `"3|1l|"` for fat 3, one litre,
    not by weight. About half the bytes of the object, but the site parses a string.
 2. *Fewer facets*: keep `f` and `z` (the buttons that narrow most), drop `w` (it is nearly always implied by `z`).
 3. *Facets only in the files of general words*: the heavy two-letter files (the ones that serve "חלב", "גבינה", "שמן")
    get them, the rest do not. Needs the site to cope with records of both kinds.
-4. *Accept the growth* and raise `MAX_FACET_GROWTH` in `publish.py`.
+4. *Accept the growth* and raise `MAX_FACET_GROWTH` in `publish.py` (**chosen**: now 0.45).
+
+### The first real run (2026-11-04) and what it showed
+
+436 stores, 59,446 products; product files 21 MB; search index 749 files (15.3 MB, largest 497 KB); and **22,342 deal
+files** (4.2 MB; the daily file budget is 18,000 for everything). 8,192 + 749 + 22,342 + 3 = 31,286: more than the host
+accepts, so nothing was published. Left out of the deals: 6,755 whole-number-less (weight) deals, 4,278 with no product the
+chain sells in the files, 707 credit-card deals.
+
+**Solved (option 1 below was chosen by the product owner):** the deals are in bucket files, 256 per chain at most, so
+22,342 deals take about 1,000 files. See "Deals" above.
+
+**What happens when the deals do not fit** (a safety net that stays): `publish` holds the deals back, publishes the prices (and search, and
+categories) as usual, and says so: `stats.json` / `meta.json` carry `deals_held_back` and a warning, and the daily issue
+lists it. Prices are never held back for the deals. `d/` is then absent and no product has a `"d"` list.
+
+**Options to bring the deals back** (a structure decision for the product owner and the website):
+
+1. *Deals in bucket files* (recommended): `d/<chain>/<n>.json`, n = hash of the deal id modulo 256 per chain, each file a
+   map `{id: deal}`. 22,342 files become about 1,000, about 4 KB each; a basket still fetches only the buckets of the
+   deals it touches. The website changes the path and reads the map.
+2. *Fewer product files*: BUCKETS 8,192 -> 2,048 frees 6,144 files (not enough alone: 25,142 remain) and changes the
+   hash the website uses.
+3. *Deals inside the product files*: no deal files at all; each deal repeats in the file of every product it mentions
+   (the 4.2 MB grows several times).

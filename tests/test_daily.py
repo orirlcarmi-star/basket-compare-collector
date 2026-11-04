@@ -295,3 +295,138 @@ def test_a_facets_warning_reaches_the_summary_and_the_issue(day):
     meta = make_meta(data, ["good"], site, utc("2026-11-04T04:30"))
     assert meta["search_facets"] is False and meta["warnings"] == stats["warnings"]
     assert "נתוני הצמצום לא נכנסו" in problems_in(meta, "success", "success")
+
+
+# --- the morning run is retried, and a missed one is started by the freshness check ---
+
+
+@pytest.mark.parametrize(
+    ("now", "last", "go"),
+    [
+        ("2026-11-04T04:07", None, True),  # winter 06:07: the first try
+        ("2026-11-04T04:37", "2026-11-04T04:20", False),  # the second try, already published
+        ("2026-11-04T04:37", None, True),  # the first one did not publish: the second goes ahead
+        ("2026-11-04T06:07", None, True),  # 08:07: the late try
+        ("2026-11-04T07:07", None, False),  # 09:07: too late for the schedule (catch-up takes over)
+        ("2026-07-15T03:07", None, True),  # summer 06:07
+        ("2026-07-15T05:07", None, True),  # summer 08:07: the late try
+    ],
+)
+def test_scheduled_retries_of_the_morning_run(now, last, go):
+    assert should_run("schedule", utc(now), utc(last) if last else None)[0] is go
+
+
+@pytest.mark.parametrize(
+    ("now", "last", "go"),
+    [
+        ("2026-11-04T07:23", None, True),  # 09:23: nothing published yet today
+        ("2026-11-04T07:23", "2026-11-04T04:10", False),  # published this morning
+        ("2026-11-04T07:23", "2026-11-03T04:10", True),  # only yesterday's
+        ("2026-11-04T03:23", None, False),  # 05:23: the daily run's own time has not come
+        ("2026-11-04T11:00", None, True),  # 13:00: still catches up, prices must not stay old
+        ("2026-11-04T19:23", None, True),  # 21:23
+        ("2026-11-04T21:00", None, False),  # 23:00: the day is over
+        ("2026-07-15T08:23", None, True),  # summer 11:23
+    ],
+)
+def test_catch_up_starts_a_missed_morning_run(now, last, go, tmp_path, capsys):
+    meta = tmp_path / "meta.json"
+    if last:
+        meta.write_text(json.dumps({"updated_at": f"{last}:00Z"}), encoding="utf-8")
+    daily_main(["catch-up", "--meta", str(meta), "--now", f"{now}:00Z"])
+    assert capsys.readouterr().out.splitlines()[0] == f"run={'true' if go else 'false'}"
+
+
+# --- the limit: at most three daily runs that really work in an Israeli day ---
+
+
+def run_row(created, seconds=900, status="completed", run_id=1):
+    """One row of `gh run list --json databaseId,status,createdAt,startedAt,updatedAt`."""
+    start = utc(created)
+    return {
+        "databaseId": run_id,
+        "status": status,
+        "createdAt": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "startedAt": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "updatedAt": (start + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def test_only_runs_that_really_worked_are_counted():
+    from collector.daily import working_runs_today
+
+    runs = [
+        run_row("2026-11-04T04:07", seconds=25, run_id=1),  # passed the gate and stopped
+        run_row("2026-11-04T04:37", seconds=2400, run_id=2),  # worked 40 minutes
+        run_row("2026-11-04T07:00", status="in_progress", run_id=3),  # working now
+        run_row("2026-11-03T04:07", seconds=2400, run_id=4),  # yesterday
+    ]
+    assert working_runs_today(runs, utc("2026-11-04T08:00")) == 2
+    assert working_runs_today(runs, utc("2026-11-04T08:00"), exclude_id=3) == 1  # not itself
+
+
+THREE = [
+    run_row("2026-11-04T04:07", 1800, run_id=1),
+    run_row("2026-11-04T06:30", 1800, run_id=2),
+    run_row("2026-11-04T09:00", 1800, run_id=3),
+]
+
+
+def test_a_scheduled_attempt_stops_after_three_working_runs(tmp_path, capsys):
+    now = utc("2026-11-04T05:00")  # 07:00 in Israel, in the retry hours
+    assert should_run("schedule", now, None, runs=THREE[:2])[0] is True
+    go, reason = should_run("schedule", now, None, runs=THREE)
+    assert go is False and "no more tries" in reason
+    # a person starting it by hand is never stopped by the limit
+    assert should_run("workflow_dispatch", now, None, runs=THREE)[0] is True
+    # and the gate command passes the list on, leaving out the run that is asking
+    runs = tmp_path / "runs.json"
+    runs.write_text(json.dumps([*THREE[:2], run_row("2026-11-04T05:00", 5, "in_progress", 99)]))
+    meta = str(tmp_path / "none.json")
+    daily_main(["gate", "--event", "schedule", "--runs", str(runs), "--current-run", "99",
+                "--meta", meta, "--now", "2026-11-04T05:00:00Z"])  # fmt: skip
+    assert capsys.readouterr().out.strip() == "run=true"
+
+
+def test_catch_up_starts_at_most_two_more_runs_then_asks_for_an_issue(tmp_path, capsys):
+    from collector.daily import should_catch_up
+
+    # 14:00 in Israel, nothing published today, the last run started three hours ago
+    now = utc("2026-11-04T12:00")
+    one = [run_row("2026-11-04T04:07", 1800, run_id=1)]
+    two = [*one, run_row("2026-11-04T06:30", 1800, run_id=2)]
+    assert should_catch_up(now, None, one) == (True, "nothing was published today", False)
+    assert should_catch_up(now, None, two)[0] is True  # the third working run of the day
+    go, reason, limited = should_catch_up(now, None, THREE)
+    assert (go, limited) == (False, True) and "already worked" in reason
+
+    runs = tmp_path / "runs.json"
+    runs.write_text(json.dumps(THREE), encoding="utf-8")
+    daily_main(["catch-up", "--meta", str(tmp_path / "none.json"), "--runs", str(runs),
+                "--now", "2026-11-04T12:00:00Z"])  # fmt: skip
+    assert capsys.readouterr().out.splitlines() == ["run=false", "limit=true"]
+
+
+def test_catch_up_leaves_a_running_or_a_recent_run_alone():
+    from collector.daily import should_catch_up
+
+    now = utc("2026-11-04T10:00")
+    running = [run_row("2026-11-04T09:30", 60, "in_progress", run_id=5)]
+    assert should_catch_up(now, None, running) == (
+        False,
+        "a daily run is waiting or running",
+        False,
+    )
+    recent = [run_row("2026-11-04T08:30", 60, run_id=6)]  # 90 minutes ago, passed the gate only
+    assert should_catch_up(now, None, recent)[1] == "a daily run started in the last two hours"
+    assert should_catch_up(utc("2026-11-04T11:30"), None, recent)[0] is True  # over two hours
+    published = utc("2026-11-04T04:20")
+    assert should_catch_up(now, published, [])[:2] == (False, "already updated today (06:20)")
+
+
+def test_a_missing_or_broken_runs_file_means_no_runs(tmp_path):
+    from collector.daily import read_runs
+
+    assert read_runs(None) == [] and read_runs(tmp_path / "none.json") == []
+    (tmp_path / "bad.json").write_text("not json", encoding="utf-8")
+    assert read_runs(tmp_path / "bad.json") == []

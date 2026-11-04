@@ -233,20 +233,30 @@ def test_search_files_of_a_published_site_carry_the_facets(two_chains, monkeypat
     assert stats["search_facets_growth_percent"] > 0
 
 
-def test_facets_over_the_growth_limit_are_left_out_with_a_warning(two_chains, capsys):
-    """The product owner's rule: more than 30% bigger and they are not written. These invented
-    names are short, so the facets are over the limit and the records keep their old shape."""
+def test_facets_over_the_growth_limit_are_left_out_with_a_warning(
+    two_chains, capsys, monkeypatch
+):
+    """The product owner's rule: more than the limit bigger and they are not written. These
+    invented names are short, so with a low limit the records keep their old shape."""
     from collector.searchindex import search_records
 
+    monkeypatch.setattr(publish, "MAX_FACET_GROWTH", 0.05)
     assert run_publish(two_chains, "v2", "--compact") == 0
     stats = json.loads((two_chains / "v2" / "stats.json").read_text(encoding="utf-8"))
     assert stats["search_facets"] is False
-    assert stats["search_facets_growth_percent"] > 30
+    assert stats["search_facets_growth_percent"] > 5
     assert "נתוני הצמצום" in stats["warnings"][0] and "Facets left out" in stats["warnings"][0]
     code = next(iter(fake_ready(1)["products"]))
     record = search_records(two_chains / "v2" / "s", f"מוצר {code}")[code]
     assert record == [code, f"מוצר {code} 1 ליטר"]  # exactly the shape from before
     assert "Facets left out" in capsys.readouterr().err
+
+
+def test_the_limit_accepts_the_growth_measured_on_real_data():
+    """The owner accepted the growth measured on the first real package (+28.2% in all, +32.3%
+    in the largest file) and set the limit at 45%: that growth is kept, a much bigger one is not."""
+    assert publish.MAX_FACET_GROWTH == 0.45
+    assert max(0.282, 0.323) <= publish.MAX_FACET_GROWTH < 0.56  # +56%: every fact on every product
 
 
 def test_the_largest_file_counts_too(two_chains, monkeypatch):

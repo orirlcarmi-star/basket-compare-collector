@@ -12,9 +12,14 @@ def text(name):
     return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
-def test_daily_runs_at_6_in_israel_in_both_summer_and_winter():
+def test_daily_is_scheduled_off_the_round_hour_with_retries_in_both_seasons():
     crons = re.findall(r'cron: "([^"]+)"', text("daily.yml"))
-    assert crons == ["0 3 * * *", "0 4 * * *"]  # 06:00 at UTC+3 and at UTC+2
+    assert crons == ["7,37 3-5 * * *"]
+    # GitHub delays or drops runs at minute 0 (03:00 and 04:00 UTC of 2026-11-04 never started)
+    for cron in crons:
+        assert not cron.startswith("0 "), "do not schedule on the round hour"
+    # 06:07 in Israel is 03:07 UTC in summer (UTC+3) and 04:07 UTC in winter (UTC+2)
+    assert "7,37 3-5" in crons[0]  # 03:07, 03:37 ... 05:37 UTC: six tries before the catch-up
 
 
 def test_daily_covers_every_chain_and_the_site_files_are_compact():
@@ -104,3 +109,30 @@ def test_the_hourly_cron_when_switched_on_covers_the_israeli_day_in_both_seasons
     cron = re.search(r'# {3}- cron: "(\d+) (\d+)-(\d+) \* \* \*"', text("hourly.yml"))
     first, last = int(cron[2]), int(cron[3])
     assert first <= 4 and last >= 20  # 07:00 at UTC+3 .. 23:00 at UTC+3 (and UTC+2: 05..21)
+
+
+def test_the_freshness_check_starts_a_missed_daily_run():
+    freshness = text("freshness.yml")
+    assert "actions: write" in freshness  # needed to start a workflow
+    assert re.search(
+        r'cron: "23 5-19 \* \* \*"', freshness
+    )  # every hour of the day, off the round hour
+    assert "collector.daily catch-up" in freshness
+    assert "gh workflow run daily.yml" in freshness
+    # never piles a second run on a running one, nor repeats a failing run every hour: these
+    # decisions are in Python now (should_catch_up) and are tested in test_daily.py
+    assert "should_catch_up" in freshness
+
+
+def test_automatic_runs_are_limited_to_three_working_runs_a_day():
+    daily, freshness = text("daily.yml"), text("freshness.yml")
+    gate = daily.split("  gate:")[1].split("\n  collect:")[0]
+    assert "actions: read" in gate and "--runs runs.json" in gate and "--current-run" in gate
+    assert "gh run list --workflow daily.yml" in gate
+    assert "catch-up --meta meta.json --runs runs.json" in freshness
+    assert 'gh issue create --title "$LIMIT_TITLE"' in freshness  # after the limit only an issue
+    assert "three daily runs" in freshness
+    # the numbers the text promises are the ones in the code
+    from collector.daily import MAX_WORKING_RUNS_PER_DAY
+
+    assert MAX_WORKING_RUNS_PER_DAY == 3

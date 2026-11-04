@@ -4,7 +4,12 @@
 them into files the browser fetches only for the products in the shopper's basket:
 
   product, per chain   "d": ["<deal id>", ...]            (the deals that mention it)
-  d/<chain>/<id>.json  {"t", "q", "p", "m"?, "c"?, "e"?, "i", "s"?}
+  d/<chain>/<n>.json   {"<deal id>": {"t", "q", "p", "m"?, "c"?, "e"?, "i", "s"?}, ...}
+
+The deals of a chain are spread over DEAL_BUCKETS (256) files, n = FNV-1a (32 bit, over the
+characters of the deal id, the same function as for the product files `p/`) modulo 256; the
+id includes a variant suffix such as "-2". A bucket with no deals has no file. A basket reads
+only the buckets of the deals its products mention. `read_deal` is the reference reader.
 
 Meaning of a deal file: every q units taken from the products in i, in any mix, cost p
 together; this can be applied again and again, up to m units in all (m absent: no limit);
@@ -52,6 +57,38 @@ from pathlib import Path
 from collector.files import same_store
 
 _UNSAFE = re.compile(r"[^0-9A-Za-z_-]")
+
+DEAL_BUCKETS = 256
+
+
+def fnv1a(text: str) -> int:
+    """FNV-1a, 32 bit, over the character codes of the text (what the website also computes)."""
+    h = 0x811C9DC5
+    for char in text:
+        h ^= ord(char)
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def deal_bucket(deal_id: str) -> int:
+    """The number n of the file d/<chain>/<n>.json that holds this deal."""
+    return fnv1a(deal_id) % DEAL_BUCKETS
+
+
+def bucket_deals(files: dict[str, dict]) -> dict[int, dict[str, dict]]:
+    """deal id -> deal  ->  bucket number -> {deal id: deal} (ids in order, so files are stable)."""
+    buckets: dict[int, dict[str, dict]] = {}
+    for deal_id in sorted(files):
+        buckets.setdefault(deal_bucket(deal_id), {})[deal_id] = files[deal_id]
+    return buckets
+
+
+def read_deal(site_dir: Path, chain: str, deal_id: str) -> dict | None:
+    """The deal with this id, read the way the website does: from its bucket file."""
+    path = site_dir / "d" / chain / f"{deal_bucket(deal_id)}.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8")).get(deal_id)
 
 
 def load_store_deals(deals_dir: Path) -> dict[str, list[dict]]:

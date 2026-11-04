@@ -6,9 +6,14 @@ import pytest
 from collector import publish
 from collector.compact import restore_prices
 from collector.sitedeals import (
+    DEAL_BUCKETS,
+    bucket_deals,
     build_chain_deals,
+    deal_bucket,
+    fnv1a,
     load_store_deals,
     places_to_positions,
+    read_deal,
     shortest_places,
 )
 from tests.test_compact import fake_ready, run_publish, write_chain
@@ -216,7 +221,7 @@ def test_published_files_hold_the_deals_and_the_products_point_to_them(with_deal
     tmp_path, codes, stores = with_deals
     assert run_publish(tmp_path, "v2", "--compact") == 0  # includes the exact restore check
     site = tmp_path / "v2"
-    seven = json.loads((site / "d" / "alpha" / "7.json").read_text(encoding="utf-8"))
+    seven = read_deal(site, "alpha", "7")
     assert seven["q"] == 2 and seven["p"] == "20.00" and seven["i"] == codes
     assert seven["s"] == [0, 1]  # two stores of forty, written as positions
     products = products_of(site)
@@ -238,7 +243,7 @@ def test_old_format_has_no_deals_and_stale_deal_files_are_removed(with_deals):
     entries = [p["c"]["alpha"] for p in products_of(tmp_path / "v1").values() if "alpha" in p["c"]]
     assert entries and all("d" not in entry for entry in entries)
     assert run_publish(tmp_path, "v2", "--compact") == 0
-    stale = tmp_path / "v2" / "d" / "alpha" / "gone.json"
+    stale = tmp_path / "v2" / "d" / "alpha" / "999.json"
     stale.write_text("{}", encoding="utf-8")
     assert run_publish(tmp_path, "v2", "--compact") == 0
     assert not stale.exists()
@@ -288,3 +293,146 @@ def test_message_names_the_biggest_part():
     text = publish.too_many_files({"p": 8192, "s": 700, "d": 12000, "other": 5}, 18_000)
     assert text and "'d'" in text and "20,000" in text
     assert publish.too_many_files({"p": 8192, "s": 700, "d": 9000, "other": 5}, 18_000) is None
+
+
+# --- too many deal files must not stop the prices ---
+
+
+def test_deals_that_do_not_fit_are_held_back_and_the_prices_still_go_out(
+    with_deals, monkeypatch, capsys
+):
+    tmp_path, codes, _ = with_deals
+    assert run_publish(tmp_path, "with", "--compact") == 0
+    with_stats = json.loads((tmp_path / "with" / "stats.json").read_text(encoding="utf-8"))
+    assert with_stats["deal_files"] == 2 and with_stats["warnings"] == []
+    others = with_stats["files_total"] - 2
+
+    # room for everything but the two deal files (+1: meta.json, which is added after publish)
+    monkeypatch.setattr(publish, "MAX_SITE_FILES", others + 1)
+    assert run_publish(tmp_path, "held", "--compact") == 0  # prices are published all the same
+    stats = json.loads((tmp_path / "held" / "stats.json").read_text(encoding="utf-8"))
+    assert stats["deal_files"] == 0 and stats["deals_held_back"] == 2
+    assert "מבצעים לא פורסמו" in stats["warnings"][0]
+    assert not (tmp_path / "held" / "d").exists()
+    products = products_of(tmp_path / "held")
+    assert all("d" not in p["c"].get("alpha", {}) for p in products.values())  # no dangling ids
+    assert restore_prices(tmp_path / "held")["alpha"]  # prices intact
+    assert "Deals not published" in capsys.readouterr().err
+
+
+def test_a_stale_deal_folder_is_removed_when_deals_are_held_back(with_deals, monkeypatch):
+    tmp_path, _, _ = with_deals
+    assert run_publish(tmp_path, "site", "--compact") == 0
+    assert (tmp_path / "site" / "d" / "alpha").exists()
+    others = json.loads((tmp_path / "site" / "stats.json").read_text("utf-8"))["files_total"] - 2
+    monkeypatch.setattr(publish, "MAX_SITE_FILES", others + 1)
+    assert run_publish(tmp_path, "site", "--compact") == 0  # same folder, deals now held back
+    assert not (tmp_path / "site" / "d").exists()
+
+
+def test_the_warning_reaches_the_summary_and_the_issue_text(with_deals, monkeypatch, tmp_path):
+    from collector.daily import make_meta, problems_in
+    from tests.test_daily import utc
+
+    root, _, _ = with_deals
+    assert run_publish(root, "full", "--compact") == 0
+    others = json.loads((root / "full" / "stats.json").read_text("utf-8"))["files_total"] - 2
+    monkeypatch.setattr(publish, "MAX_SITE_FILES", others + 1)
+    assert run_publish(root, "held", "--compact") == 0
+    meta = make_meta(root / "data", ["alpha"], root / "held", utc("2026-11-04T10:00"))
+    assert meta["deals_held_back"] == 2 and "מבצעים לא פורסמו" in meta["warnings"][0]
+    assert any("מבצעים לא פורסמו" in line for line in problems_in(meta, "success", "success"))
+
+
+# --- the files of the deals: 256 buckets per chain, n = FNV-1a of the deal id modulo 256 ---
+
+
+def test_fnv1a_is_the_standard_one():
+    # published test vectors of 32-bit FNV-1a
+    assert fnv1a("") == 0x811C9DC5
+    assert fnv1a("a") == 0xE40C292C
+    assert fnv1a("foobar") == 0xBF9CF968
+
+
+@pytest.mark.parametrize(
+    ("deal_id", "hash32", "n"),
+    [
+        # The numbers the website checks its own computation against.
+        ("7", 839689206, 246),
+        ("7-2", 2298208649, 137),  # the suffix of a variant is part of the id
+        ("4662141", 845991053, 141),
+        ("4662141-2", 3546552214, 150),
+        ("4662141-3", 3563329833, 41),
+    ],
+)
+def test_the_bucket_of_a_deal_id_has_exact_values(deal_id, hash32, n):
+    assert fnv1a(deal_id) == hash32
+    assert deal_bucket(deal_id) == n == hash32 % 256 == hash32 % DEAL_BUCKETS
+
+
+def test_the_product_files_use_the_same_function_with_another_modulus():
+    assert publish.bucket_of("7") == 839689206 % publish.BUCKETS
+
+
+def many_deals(count):
+    """count promotions in one store, each a different deal, with ids 1000..."""
+    return [deal(promotion=str(1000 + n), items=("milk",)) for n in range(count)]
+
+
+def test_every_deal_is_in_the_file_of_its_hash_and_only_there(with_deals):
+    import shutil
+
+    tmp_path, codes, stores = with_deals
+    shutil.rmtree(tmp_path / "data" / "alpha" / "deals")  # replace the fixture's two deals
+    write_deals(tmp_path, "alpha", {stores[0]: many_deals(300), stores[1]: many_deals(50)})
+    # the invented chain sells these codes: use one of them in every deal
+    for path in (tmp_path / "data" / "alpha" / "deals").glob("*.json"):
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        for row in rows:
+            row["item_codes"] = [codes[0]]
+        path.write_text(json.dumps(rows), encoding="utf-8")
+    assert run_publish(tmp_path, "v2", "--compact") == 0
+    site = tmp_path / "v2"
+
+    seen: dict[str, str] = {}
+    for path in sorted((site / "d" / "alpha").glob("*.json")):
+        assert path.stem.isdigit() and 0 <= int(path.stem) < DEAL_BUCKETS
+        bucket = json.loads(path.read_text(encoding="utf-8"))
+        assert bucket, "an empty bucket must not be written"
+        for deal_id, body in bucket.items():
+            assert deal_bucket(deal_id) == int(path.stem)  # in the file of its hash
+            assert deal_id not in seen  # and in no other file
+            seen[deal_id] = path.name
+            assert {"q", "p", "i", "t"} <= set(body)
+            assert read_deal(site, "alpha", deal_id) == body
+    assert len(seen) == 300  # 300 distinct promotions (the 50 are the same ones in another store)
+    stats = json.loads((site / "stats.json").read_text(encoding="utf-8"))
+    assert stats["deals"] == 300 and stats["deal_files"] == len(
+        list((site / "d" / "alpha").glob("*"))
+    )
+    assert stats["deal_files"] <= DEAL_BUCKETS  # never more than 256 files for the chain
+    # the product's list of ids is unchanged: plain ids
+    product = products_of(site)[codes[0]]["c"]["alpha"]
+    assert "1000" in product["d"] and all(isinstance(i, str) for i in product["d"])
+
+
+def test_a_missing_deal_is_not_found(with_deals):
+    tmp_path, _, _ = with_deals
+    assert run_publish(tmp_path, "v2", "--compact") == 0
+    assert read_deal(tmp_path / "v2", "alpha", "no-such-deal") is None
+    assert read_deal(tmp_path / "v2", "beta", "7") is None  # beta has no deals at all
+
+
+def test_all_four_chains_with_thousands_of_deals_fit_the_budget():
+    """The first real run had 22,342 deals; in buckets they take at most 256 files per chain."""
+    chains = 4
+    deals_per_chain = 6000
+    files = {}
+    for chain in range(chains):
+        ids = {f"{chain}{n}": {"q": 2} for n in range(deals_per_chain)}
+        for number, bucket in bucket_deals(ids).items():
+            files[f"d/c{chain}/{number}.json"] = bucket
+    assert sum(len(b) for b in files.values()) == chains * deals_per_chain
+    assert len(files) <= chains * DEAL_BUCKETS == 1024
+    # products 8,192 + search (about 750) + deals (at most 1,024) + the few small files
+    assert publish.BUCKETS + 800 + len(files) + 4 < publish.MAX_SITE_FILES
