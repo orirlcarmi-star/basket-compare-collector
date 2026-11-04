@@ -136,7 +136,7 @@ as "the third place, if there is one" should treat `""` as none. Example, a file
 {"p": [["7290000000015", "חלב 3% בקרטון 1 ליטר", "dairy", {"f": "3", "z": ["1", "l"]}],
        ["7290000000084", "עגבניות", "", {"w": true}],
        ["7290000000206", "מוצר ללא נתונים"]],
- "w": {"חלב": [0], "עגבנית": [1], "מוצר": [2]}}
+ "w": {"חלב": [0], "עגבניות": [1], "מוצר": [2]}}
 ```
 The index grows by about 30% (the name and facts are repeated in the file of every word of the name): measurements
 and options in `SEARCH-FACTS.md`.
