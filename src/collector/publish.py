@@ -27,6 +27,8 @@ import json
 import shutil
 import sys
 from collections import Counter
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from decimal import Decimal
 from pathlib import Path
 
@@ -152,17 +154,30 @@ def published_prices(chain: str, ready: dict) -> dict[str, dict[str, str]]:
     }
 
 
-def attach_deals(
-    out: Path, data: Path, chains: list[str], products: dict, indexes: dict
-) -> tuple[list[Path], int, Counter[str]]:
-    """Write d/<chain>/<id>.json for every chain with deals and add "d" to the products.
+@dataclass
+class DealPlan:
+    """The deal files and product references of a run, worked out but not yet written."""
 
-    Returns the files written, the size of the deal references added to the products (bytes, as
-    the products' own files will carry them) and why deals were left out (collector.sitedeals)."""
-    shutil.rmtree(out / "d", ignore_errors=True)  # deals that are gone
-    written: list[Path] = []
-    references = 0
-    skipped: Counter[str] = Counter()
+    files: dict[str, dict] = dataclass_field(
+        default_factory=dict
+    )  # "d/<chain>/<id>.json" -> content
+    refs: dict[str, dict[str, list[str]]] = dataclass_field(
+        default_factory=dict
+    )  # chain -> code -> ids
+    skipped: Counter = dataclass_field(default_factory=Counter)  # why deals were left out
+    dropped: int = 0  # deal files not published because they would not fit (see main)
+
+    def reference_bytes(self) -> int:
+        return sum(
+            len(json.dumps(ids, separators=(",", ":")))
+            for by_code in self.refs.values()
+            for ids in by_code.values()
+        )
+
+
+def plan_deals(data: Path, chains: list[str], products: dict, indexes: dict) -> DealPlan:
+    """Work out d/<chain>/<id>.json for every chain with deals (collector.sitedeals)."""
+    plan = DealPlan()
     now = israel_now()
     for chain in chains:
         folder = data / chain / "deals"
@@ -172,15 +187,41 @@ def attach_deals(
         files, by_item, left_out = build_chain_deals(
             load_store_deals(folder), indexes[chain], sold, now
         )
-        skipped += left_out
-        for deal_id, content in files.items():
-            path = out / "d" / chain / f"{deal_id}.json"
-            write_json(path, content)
-            written.append(path)
+        plan.skipped += left_out
+        plan.files.update({f"d/{chain}/{deal_id}.json": body for deal_id, body in files.items()})
+        plan.refs[chain] = by_item
+    return plan
+
+
+def apply_deal_refs(products: dict, plan: DealPlan) -> None:
+    """Add "d" (the deal ids) to the products' entries."""
+    for chain, by_item in plan.refs.items():
         for code, ids in by_item.items():
             products[code]["c"][chain]["d"] = ids
-            references += len(json.dumps(ids, separators=(",", ":")))
-    return written, references, skipped
+
+
+def write_deals(out: Path, plan: DealPlan) -> list[Path]:
+    shutil.rmtree(out / "d", ignore_errors=True)  # deals that are gone
+    written = []
+    for relative, body in plan.files.items():
+        write_json(out / relative, body)
+        written.append(out / relative)
+    return written
+
+
+def deals_do_not_fit(plan: DealPlan, other_files: int, limit: int) -> str | None:
+    """A warning (Hebrew and English) when the deal files would put the site over the file limit."""
+    total = other_files + len(plan.files)
+    if total <= limit:
+        return None
+    return (
+        f"מבצעים לא פורסמו: {len(plan.files):,} קבצי מבצעים יחד עם שאר הקבצים ({other_files:,}) "
+        f"הם {total:,}, מעל המגבלה ({limit:,}; האתר מקבל עד 20,000). המחירים פורסמו כרגיל, "
+        "ללא מבצעים. צריך להחליט איך לצמצם את קבצי המבצעים (SITE-DATA.md, סעיף "
+        '"How many files").\n'
+        f"Deals not published: {len(plan.files):,} deal files plus {other_files:,} others would be "
+        f"{total:,}, over the limit of {limit:,}. Prices were published without deals."
+    )
 
 
 def count_files(out: Path) -> dict[str, int]:
@@ -256,13 +297,18 @@ def main(argv: list[str] | None = None) -> int:
         unlocated += missing
 
     finish_products(products)
-    deal_files: list[Path] = []
-    deal_references = 0
-    deals_skipped: Counter[str] = Counter()
+    search_index = build_search_index({code: (p["n"], p.get("k")) for code, p in products.items()})
+    plan = DealPlan()
+    warnings: list[str] = []
     if args.compact:  # the deal files use store positions, which only format 2 has
-        deal_files, deal_references, deals_skipped = attach_deals(
-            args.out, args.data, args.chains, products, indexes
-        )
+        plan = plan_deals(args.data, args.chains, products, indexes)
+        # p, s and the four small files (stores, categories, stats, meta) come first: the deals take
+        # what is left. Too many deals must not stop the prices: they are held back, with a warning.
+        warning = deals_do_not_fit(plan, BUCKETS + len(search_index) + 4, MAX_SITE_FILES)
+        if warning:
+            warnings.append(warning)
+            plan = DealPlan(skipped=plan.skipped, dropped=len(plan.files))
+        apply_deal_refs(products, plan)
     buckets: list[dict] = [{} for _ in range(BUCKETS)]
     for code, product in products.items():
         buckets[bucket_of(code)][code] = (
@@ -278,10 +324,8 @@ def main(argv: list[str] | None = None) -> int:
     write_json(args.out / "categories.json", [{"id": c.id, "name": c.name} for c in CATEGORIES])
     for old in (args.out / "s").glob("*.json"):  # words of products that are gone
         old.unlink()
-    index_files = write_index(
-        build_search_index({code: (p["n"], p.get("k")) for code, p in products.items()}),
-        args.out / "s",
-    )
+    index_files = write_index(search_index, args.out / "s")
+    deal_files = write_deals(args.out, plan) if args.compact else []
     index_sizes = [f.stat().st_size for f in index_files]
     unclassified = sorted((p["n"], code) for code, p in products.items() if "k" not in p)
     if args.review:
@@ -303,8 +347,10 @@ def main(argv: list[str] | None = None) -> int:
             "deal_files": len(deal_files),
             "deal_bytes": sum(f.stat().st_size for f in deal_files),
             "deal_largest_bytes": max((f.stat().st_size for f in deal_files), default=0),
-            "deal_references_bytes": deal_references,
-            "deals_left_out": dict(deals_skipped),
+            "deal_references_bytes": plan.reference_bytes(),
+            "deals_left_out": dict(plan.skipped),
+            "deals_held_back": plan.dropped,
+            "warnings": warnings,
         },
     )
     parts = count_files(args.out)  # stats.json is in; meta.json is added later, within the margin
@@ -328,14 +374,17 @@ def main(argv: list[str] | None = None) -> int:
         deal_mb = sum(f.stat().st_size for f in deal_files) / 1e6
         print(
             f"deals: {len(deal_files):,} files ({deal_mb:.1f}MB), "
-            f"references in the product files {deal_references / 1e3:.0f}KB; "
-            f"left out: {dict(deals_skipped) or 'none'}"
+            f"references in the product files {plan.reference_bytes() / 1e3:.0f}KB; "
+            f"left out: {dict(plan.skipped) or 'none'}; "
+            f"held back for lack of room: {plan.dropped:,}"
         )
     print(
         f"files in the site folder: {sum(parts.values()):,} of {MAX_SITE_FILES:,} allowed {parts}"
     )
     if unlocated:
         print(f"left out, no location: {', '.join(unlocated)}")
+    for warning in warnings:
+        print(warning, file=sys.stderr)
     problem = too_many_files(parts, MAX_SITE_FILES)
     if problem:
         print(problem, file=sys.stderr)

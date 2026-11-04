@@ -158,3 +158,24 @@ of the units of the prices, and for a product sold by weight those units are kil
 
 **Effort:** small on our side (one more list in the products and the same deal file with a decimal `q`) and a short
 addition to the calculator on the website; no change to the files it reads today.
+
+### The first real run (2026-11-04) and what it showed
+
+436 stores, 59,446 products; product files 21 MB; search index 749 files (15.3 MB, largest 497 KB); and **22,342 deal
+files** (4.2 MB; the daily file budget is 18,000 for everything). 8,192 + 749 + 22,342 + 3 = 31,286: more than the host
+accepts, so nothing was published. Left out of the deals: 6,755 whole-number-less (weight) deals, 4,278 with no product the
+chain sells in the files, 707 credit-card deals.
+
+**What happens now when the deals do not fit:** `publish` holds the deals back, publishes the prices (and search, and
+categories) as usual, and says so: `stats.json` / `meta.json` carry `deals_held_back` and a warning, and the daily issue
+lists it. Prices are never held back for the deals. `d/` is then absent and no product has a `"d"` list.
+
+**Options to bring the deals back** (a structure decision for the product owner and the website):
+
+1. *Deals in bucket files* (recommended): `d/<chain>/<n>.json`, n = hash of the deal id modulo 256 per chain, each file a
+   map `{id: deal}`. 22,342 files become about 1,000, about 4 KB each; a basket still fetches only the buckets of the
+   deals it touches. The website changes the path and reads the map.
+2. *Fewer product files*: BUCKETS 8,192 -> 2,048 frees 6,144 files (not enough alone: 25,142 remain) and changes the
+   hash the website uses.
+3. *Deals inside the product files*: no deal files at all; each deal repeats in the file of every product it mentions
+   (the 4.2 MB grows several times).
