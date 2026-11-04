@@ -11,6 +11,18 @@ word of the query is enough to show results: no product files are read until the
 something to the basket. (A product with several words is in several files; the name is
 repeated, which is what makes the index about four times bigger than one with barcodes only.)
 
+Facts for the narrowing buttons. A record may carry a fourth place: an object with the facts the
+website needs to ask "which fat percent? which size?" without reading the product file —
+  "f"  fat percent, as written in the product file ("3")
+  "z"  what the package holds, [amount, "l" | "kg" | "unit"] (price / amount = unit price)
+  "w"  true when the product is sold by weight (its price is per kilo)
+Each is left out when it is not known, and the whole object is left out when none is: a record is
+then exactly `[barcode, name, category?]` as before. Nothing in the first three places moves or
+changes meaning, so a reader that knows only those keeps working; when a product has facts but
+no category, the category place holds "" (the empty string: "no category") so that the facts
+can stay in the fourth place. The values are the ones the product file holds (`a.f`, `z`, `w`),
+the same names and shapes, computed by `collector.attributes` and `collector.unitprice`.
+
 The file name is the two letters as four hex digits of each ("חל" -> "05d705dc"), so any letter
 is safe in a URL. Words and queries are written in the normal form of `collector.textnorm`
 (no vowel points or apostrophes, plain final letters, abbreviations such as "גב." spelled out).
@@ -58,9 +70,38 @@ def stems(word: str, vocabulary: set[str]) -> list[str]:
     return []
 
 
-def build_index(products: Mapping[str, tuple[str, str | None]]) -> dict[str, dict]:
-    """barcode -> (name, category id or None)  ->  {file name: {"p": [...], "w": {...}}}."""
-    searchable = {code: words(name) for code, (name, _) in products.items()}
+def search_facts(product: Mapping) -> dict:
+    """The facts of a product that go into its search record (see the module text): the fat
+    percent from `a.f`, the package contents `z`, and `w` when sold by weight. Left out when
+    missing."""
+    facts: dict = {}
+    fat = (product.get("a") or {}).get("f")
+    if fat:
+        facts["f"] = fat
+    if product.get("z"):
+        facts["z"] = list(product["z"])
+    if product.get("w"):
+        facts["w"] = True
+    return facts
+
+
+def record(code: str, entry: tuple) -> list:
+    """[barcode, name, category?, facts?] — the category place holds "" when only facts follow."""
+    name, category, *rest = entry
+    facts = rest[0] if rest else {}
+    made: list = [code, name]
+    if category or facts:
+        made.append(category or "")
+    if facts:
+        made.append(dict(facts))
+    return made
+
+
+def build_index(products: Mapping[str, tuple]) -> dict[str, dict]:
+    """barcode -> (name, category id or None[, facts])  ->  {file name: {"p": [...], "w": {...}}}.
+
+    `facts` is optional (see `search_facts`); without it a record is [barcode, name, category?]."""
+    searchable = {code: words(entry[0]) for code, entry in products.items()}
     vocabulary = {w for ws in searchable.values() for w in ws}
     postings: dict[str, set[str]] = {}
     for code, ws in searchable.items():
@@ -78,8 +119,7 @@ def build_index(products: Mapping[str, tuple[str, str | None]]) -> dict[str, dic
         for code in sorted(postings[word]):
             if code not in place:
                 place[code] = len(content["p"])
-                text, category = products[code]
-                content["p"].append([code, text, category] if category else [code, text])
+                content["p"].append(record(code, products[code]))
             entry.append(place[code])
         content["w"][word] = entry
     return files
@@ -97,7 +137,8 @@ def write_index(index: Mapping[str, Mapping], folder: Path) -> list[Path]:
 
 def search(folder: Path, query: str) -> dict[str, tuple[str, str | None]] | None:
     """barcode -> (name, category id or None) of the products having every word of the query
-    (None: nothing to search for)."""
+    (None: nothing to search for). The facts of the fourth place are not part of this answer;
+    `facts_of` reads them from a record."""
     found: dict[str, tuple[str, str | None]] | None = None
     for word in words(query):
         path = folder / file_name(word)
@@ -107,7 +148,7 @@ def search(folder: Path, query: str) -> dict[str, tuple[str, str | None]] | None
         matches = {
             content["p"][i][0]: (
                 content["p"][i][1],
-                content["p"][i][2] if len(content["p"][i]) > 2 else None,
+                (content["p"][i][2] if len(content["p"][i]) > 2 else None) or None,
             )
             for w, places in content["w"].items()
             if w.startswith(word)
@@ -115,3 +156,8 @@ def search(folder: Path, query: str) -> dict[str, tuple[str, str | None]] | None
         }
         found = matches if found is None else {c: v for c, v in found.items() if c in matches}
     return found
+
+
+def facts_of(entry: list) -> dict:
+    """The facts of a search record (empty when it has none)."""
+    return entry[3] if len(entry) > 3 else {}

@@ -44,7 +44,7 @@ from collector.files import same_store
 from collector.locate import apply_manual, load_manual
 from collector.names import better_name
 from collector.searchindex import build_index as build_search_index
-from collector.searchindex import write_index
+from collector.searchindex import search_facts, write_index
 from collector.sitedeals import build_chain_deals, load_store_deals
 from collector.unitprice import contents
 
@@ -229,6 +229,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--compact", action="store_true", help="write the smaller format 2 (collector.compact)"
     )
+    parser.add_argument(
+        "--search-facts",
+        action="store_true",
+        help="put fat percent, package size and 'sold by weight' into the search records "
+        "(SEARCH-FACTS.md: off until the product owner decides, the index grows by ~30%)",
+    )
     args = parser.parse_args(argv)
 
     products: dict[str, dict] = {}
@@ -279,7 +285,12 @@ def main(argv: list[str] | None = None) -> int:
     for old in (args.out / "s").glob("*.json"):  # words of products that are gone
         old.unlink()
     index_files = write_index(
-        build_search_index({code: (p["n"], p.get("k")) for code, p in products.items()}),
+        build_search_index(
+            {
+                code: (p["n"], p.get("k"), search_facts(p) if args.search_facts else {})
+                for code, p in products.items()
+            }
+        ),
         args.out / "s",
     )
     index_sizes = [f.stat().st_size for f in index_files]

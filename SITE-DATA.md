@@ -116,6 +116,31 @@ The real size is in `meta.json` (`search_index_bytes`, `search_index_largest_byt
 files, 9.0 MB (2.2 MB gzipped), the largest 1.0 MB. If the real largest file is big, split the heavy prefixes by three
 letters. The number of files is checked together with all the others (18,000 in all, see "How many files").
 
+**Facts in the search record (optional — off until the product owner decides, see `SEARCH-FACTS.md`).**
+`publish --compact --search-facts` adds a fourth place to a record: an object with the facts the website needs for
+its narrowing buttons ("which fat percent? which size?"), so it need not read the product files of up to 60 candidates:
+
+| key | meaning | same as in the product file |
+|---|---|---|
+| `f` | fat percent | `a.f` (`"3"`) |
+| `z` | what the package holds, `[amount, "l" \| "kg" \| "unit"]` | `z` |
+| `w` | `true` when sold by weight | `w` |
+
+A missing value is not written, and when a product has none of them the record is exactly what it was
+(`[barcode, name, category?]`). **The first three places do not move and do not change meaning**, so a reader that knows
+only those keeps working. One detail: when a product has facts but no category, the category place holds `""` (the
+empty string, meaning "no category") so that the facts can stay in the fourth place; a reader that takes the category
+as "the third place, if there is one" should treat `""` as none. Example, a file with three products:
+
+```json
+{"p": [["7290000000015", "חלב 3% בקרטון 1 ליטר", "dairy", {"f": "3", "z": ["1", "l"]}],
+       ["7290000000084", "עגבניות", "", {"w": true}],
+       ["7290000000206", "מוצר ללא נתונים"]],
+ "w": {"חלב": [0], "עגבנית": [1], "מוצר": [2]}}
+```
+The index grows by about 30% (the name and facts are repeated in the file of every word of the name): measurements
+and options in `SEARCH-FACTS.md`.
+
 ## `meta.json` and the hourly update
 
 `updated_at` is when the files were last replaced (by the daily run or by the hourly update); `full_updated_at` is when

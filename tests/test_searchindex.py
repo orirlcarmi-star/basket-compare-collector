@@ -2,7 +2,15 @@ import json
 
 import pytest
 
-from collector.searchindex import build_index, file_name, search, stems, write_index
+from collector.searchindex import (
+    build_index,
+    facts_of,
+    file_name,
+    search,
+    search_facts,
+    stems,
+    write_index,
+)
 
 PRODUCTS = {
     "1": ("חלב בקרטון 3% שומן 1 ל", "dairy"),
@@ -113,3 +121,65 @@ def test_the_index_is_deterministic():
     assert json.dumps(build_index(PRODUCTS)) == json.dumps(
         build_index(dict(reversed(PRODUCTS.items())))
     )
+
+
+# --- facts for the narrowing buttons: an addition in the fourth place, nothing else moves ---
+
+
+def records(index, word):
+    return {e[0]: e for e in index[file_name(word)]["p"]}
+
+
+def test_search_facts_are_the_product_files_own_values_and_only_those_that_exist():
+    milk = {"a": {"f": "3", "b": "תנובה"}, "z": ["1", "l"], "w": False}
+    assert search_facts(milk) == {"f": "3", "z": ["1", "l"]}  # no brand, no "free of", no w: false
+    assert search_facts({"w": True}) == {"w": True}
+    assert search_facts({"a": {"b": "תנובה", "d": ["lactose"]}}) == {}  # not asked for: left out
+    assert search_facts({"a": {}, "z": [], "w": False}) == {} and search_facts({}) == {}
+
+
+def test_a_record_with_facts_has_them_in_the_fourth_place_after_name_and_category():
+    index = build_index({"1": ("חלב 3% 1 ליטר", "dairy", {"f": "3", "z": ["1", "l"]})})
+    record = records(index, "חלב")["1"]
+    assert record == ["1", "חלב 3% 1 ליטר", "dairy", {"f": "3", "z": ["1", "l"]}]
+    assert facts_of(record) == {"f": "3", "z": ["1", "l"]}
+
+
+def test_without_a_category_the_category_place_is_the_empty_string_so_the_facts_stay_fourth():
+    index = build_index({"1": ("עגבניות", None, {"w": True})})
+    assert records(index, "עגבניות")["1"] == ["1", "עגבניות", "", {"w": True}]
+
+
+def test_a_product_without_facts_is_written_exactly_as_before():
+    index = build_index(
+        {"1": ("חלב", "dairy", {}), "2": ("חלב שקדים", None, {}), "3": ("חלב", None)}
+    )
+    found = records(index, "חלב")
+    assert found["1"] == ["1", "חלב", "dairy"]
+    assert found["2"] == ["2", "חלב שקדים"] and found["3"] == ["3", "חלב"]  # no extra places at all
+    assert facts_of(found["3"]) == {}
+
+
+def test_the_first_three_places_and_the_word_lists_do_not_change_when_facts_are_added():
+    plain = {code: (name, category) for code, (name, category) in PRODUCTS.items()}
+    with_facts = {
+        code: (name, category, {"f": "3", "z": ["1", "l"], "w": True})
+        for code, (name, category) in PRODUCTS.items()
+    }
+    before, after = build_index(plain), build_index(with_facts)
+    assert before.keys() == after.keys()
+    for name in before:
+        assert before[name]["w"] == after[name]["w"]  # the same words, the same positions
+        for old, new in zip(before[name]["p"], after[name]["p"], strict=True):
+            assert new[:2] == old[:2]  # barcode and name
+            assert (new[2] or None) == (old[2] if len(old) > 2 else None)  # category
+            assert isinstance(new[3], dict)  # the only addition
+
+
+def test_search_reads_a_category_less_record_with_facts_as_having_no_category(tmp_path):
+    write_index(
+        build_index({"1": ("עגבניות", None, {"w": True}), "2": ("חלב", "dairy", {"f": "3"})}),
+        tmp_path,
+    )
+    assert search(tmp_path, "עגבניות") == {"1": ("עגבניות", None)}
+    assert search(tmp_path, "חלב") == {"2": ("חלב", "dairy")}

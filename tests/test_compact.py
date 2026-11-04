@@ -192,6 +192,28 @@ def test_site_files_carry_category_facts_unit_contents_and_a_search_index(two_ch
     assert stats["classified_percent"] == 0.0 and stats["search_files"] > 0
 
 
+def test_search_records_carry_the_facts_the_product_file_holds_when_asked_for(two_chains):
+    from collector.searchindex import facts_of, file_name
+
+    assert run_publish(two_chains, "v2", "--compact", "--search-facts") == 0
+    products = products_in(two_chains / "v2")
+    shard = json.loads((two_chains / "v2" / "s" / file_name("ליטר")).read_text(encoding="utf-8"))
+    assert len(shard["p"]) == 500
+    by_name = {name: rest for _code, name, *rest in shard["p"]}
+    for name, product in products.items():
+        category, facts = by_name[name]  # fake names have no category: "" then the facts
+        assert category == "" and facts == {"z": product["z"]}  # the product file's own value
+    assert all(facts_of(entry) == {"z": ["1", "l"]} for entry in shard["p"])
+
+
+def test_search_records_stay_as_they_were_without_the_flag(two_chains):
+    from collector.searchindex import file_name
+
+    assert run_publish(two_chains, "v2", "--compact") == 0
+    shard = json.loads((two_chains / "v2" / "s" / file_name("ליטר")).read_text(encoding="utf-8"))
+    assert all(len(entry) == 2 for entry in shard["p"])  # [barcode, name]: nothing added
+
+
 def products_in(site):
     """name -> product, read from every bucket file of a site folder."""
     found = {}
