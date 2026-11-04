@@ -12,9 +12,14 @@ def text(name):
     return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
-def test_daily_runs_at_6_in_israel_in_both_summer_and_winter():
+def test_daily_is_scheduled_off_the_round_hour_with_retries_in_both_seasons():
     crons = re.findall(r'cron: "([^"]+)"', text("daily.yml"))
-    assert crons == ["0 3 * * *", "0 4 * * *"]  # 06:00 at UTC+3 and at UTC+2
+    assert crons == ["7,37 3,4 * * *", "7 5 * * *"]
+    # GitHub delays or drops runs at minute 0 (03:00 and 04:00 UTC of 2026-11-04 never started)
+    for cron in crons:
+        assert not cron.startswith("0 "), "do not schedule on the round hour"
+    # 06:07 in Israel is 03:07 UTC in summer (UTC+3) and 04:07 UTC in winter (UTC+2)
+    assert "7,37 3,4" in crons[0]
 
 
 def test_daily_covers_every_chain_and_the_site_files_are_compact():
@@ -104,3 +109,12 @@ def test_the_hourly_cron_when_switched_on_covers_the_israeli_day_in_both_seasons
     cron = re.search(r'# {3}- cron: "(\d+) (\d+)-(\d+) \* \* \*"', text("hourly.yml"))
     first, last = int(cron[2]), int(cron[3])
     assert first <= 4 and last >= 20  # 07:00 at UTC+3 .. 23:00 at UTC+3 (and UTC+2: 05..21)
+
+
+def test_the_freshness_check_starts_a_missed_daily_run():
+    freshness = text("freshness.yml")
+    assert "actions: write" in freshness  # needed to start a workflow
+    assert re.search(r'cron: "23 5,7,9 \* \* \*"', freshness)  # mornings, off the round hour
+    assert "collector.daily catch-up" in freshness
+    assert "gh workflow run daily.yml" in freshness
+    assert "daily runs waiting or running" in freshness  # never piles a second run on a running one

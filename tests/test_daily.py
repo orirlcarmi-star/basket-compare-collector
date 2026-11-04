@@ -284,3 +284,41 @@ def test_the_hourly_update_keeps_the_full_update_time_and_unchanged_is_not_a_pro
     assert json.loads((tmp_path / "m.json").read_text("utf-8"))["full_updated_at"] == (
         "2026-11-04T04:20:00Z"
     )
+
+
+# --- the morning run is retried, and a missed one is started by the freshness check ---
+
+
+@pytest.mark.parametrize(
+    ("now", "last", "go"),
+    [
+        ("2026-11-04T04:07", None, True),  # winter 06:07: the first try
+        ("2026-11-04T04:37", "2026-11-04T04:20", False),  # the second try, already published
+        ("2026-11-04T04:37", None, True),  # the first one did not publish: the second goes ahead
+        ("2026-11-04T06:07", None, True),  # 08:07: the late try
+        ("2026-11-04T07:07", None, False),  # 09:07: too late for the schedule (catch-up takes over)
+        ("2026-07-15T03:07", None, True),  # summer 06:07
+        ("2026-07-15T05:07", None, True),  # summer 08:07: the late try
+    ],
+)
+def test_scheduled_retries_of_the_morning_run(now, last, go):
+    assert should_run("schedule", utc(now), utc(last) if last else None)[0] is go
+
+
+@pytest.mark.parametrize(
+    ("now", "last", "go"),
+    [
+        ("2026-11-04T07:23", None, True),  # 09:23: nothing published yet today
+        ("2026-11-04T07:23", "2026-11-04T04:10", False),  # published this morning
+        ("2026-11-04T07:23", "2026-11-03T04:10", True),  # only yesterday's
+        ("2026-11-04T03:23", None, False),  # 05:23: the daily run's own time has not come
+        ("2026-11-04T11:00", None, False),  # 13:00: too late for a catch-up
+        ("2026-07-15T08:23", None, True),  # summer 11:23
+    ],
+)
+def test_catch_up_starts_a_missed_morning_run(now, last, go, tmp_path, capsys):
+    meta = tmp_path / "meta.json"
+    if last:
+        meta.write_text(json.dumps({"updated_at": f"{last}:00Z"}), encoding="utf-8")
+    daily_main(["catch-up", "--meta", str(meta), "--now", f"{now}:00Z"])
+    assert capsys.readouterr().out.strip() == f"run={'true' if go else 'false'}"

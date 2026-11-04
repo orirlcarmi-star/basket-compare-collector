@@ -6,11 +6,14 @@ name: Freshness check
 on:
   schedule:
     - cron: "41 */6 * * *"
+    # Catch-up slots in the Israeli morning (07:23, 09:23, 11:23 in winter; one hour later in summer)
+    - cron: "23 5,7,9 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
   issues: write
+  actions: write # to start the daily run when the morning run did not happen
 
 jobs:
   freshness:
@@ -46,3 +49,19 @@ jobs:
             gh issue close "$existing" --comment "הנתונים עודכנו, הבעיה נפתרה."
           fi
           exit 0
+
+      - name: Start the daily run if the morning one did not publish
+        # The daily run is scheduled, and GitHub sometimes does not start scheduled runs. In the
+        # Israeli morning (07:00-12:59), when nothing was published today and no daily run is
+        # waiting or running, start it here. The daily run's own gate checks again.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          go=$(python -m collector.daily catch-up --meta meta.json | grep -o 'run=.*' | cut -d= -f2)
+          busy=$(gh run list --workflow daily.yml --json status --jq '[.[] | select(.status != "completed")] | length')
+          if [ "$go" = "true" ] && [ "${busy:-0}" = "0" ]; then
+            echo "The morning run did not publish: starting the daily run"
+            gh workflow run daily.yml
+          else
+            echo "No catch-up needed (run=$go, daily runs waiting or running: ${busy:-0})"
+          fi
