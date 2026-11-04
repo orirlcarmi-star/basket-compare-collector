@@ -206,6 +206,7 @@ def make_meta(
         "deals_left_out": stats.get("deals_left_out", {}),
         "files_total": stats.get("files_total", 0),
         "files_by_part": stats.get("files_by_part", {}),
+        "search_facets": stats.get("search_facets", False),
         "deals_held_back": stats.get("deals_held_back", 0),
         "warnings": stats.get("warnings", []),
         "chains": report,

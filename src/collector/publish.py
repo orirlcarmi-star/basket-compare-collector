@@ -46,11 +46,15 @@ from collector.files import same_store
 from collector.locate import apply_manual, load_manual
 from collector.names import better_name
 from collector.searchindex import build_index as build_search_index
-from collector.searchindex import write_index
+from collector.searchindex import facets_of, file_sizes, index_size, write_index
 from collector.sitedeals import bucket_deals, build_chain_deals, fnv1a, load_store_deals
 from collector.unitprice import contents
 
 BUCKETS = 8192
+# The facets added to the search records (fat, size, weight) may make the index, and its largest
+# file, this much bigger (decided by the product owner). More than that and they are left out,
+# with a warning.
+MAX_FACET_GROWTH = 0.45
 # Cloudflare Pages takes at most 20,000 files in one deployment. The run fails above this many,
 # leaving room for growth, so a package the host would refuse is never published.
 MAX_SITE_FILES = 18_000
@@ -224,6 +228,31 @@ def deals_do_not_fit(plan: DealPlan, other_files: int, limit: int) -> str | None
     )
 
 
+def search_with_facets(products: dict) -> tuple[dict, dict, str | None]:
+    """The search index with the facets, unless they would make the index, or its largest file,
+    more than MAX_FACET_GROWTH bigger: then the plain index and a warning.
+
+    Returns (index, {"kept": bool, "total": growth, "largest": growth}, warning or None)."""
+    plain = build_search_index({code: (p["n"], p.get("k")) for code, p in products.items()})
+    rich = build_search_index(
+        {code: (p["n"], p.get("k"), facets_of(p)) for code, p in products.items()}
+    )
+    total = index_size(rich) / max(index_size(plain), 1) - 1
+    largest = max(file_sizes(rich), default=0) / max(max(file_sizes(plain), default=1), 1) - 1
+    growth = {"kept": max(total, largest) <= MAX_FACET_GROWTH, "total": total, "largest": largest}
+    if growth["kept"]:
+        return rich, growth, None
+    return (
+        plain,
+        growth,
+        "נתוני הצמצום (שומן, גודל, משקל) לא נכנסו לאינדקס החיפוש: הם היו מגדילים אותו ב-"
+        f"{total:.0%} (והקובץ הגדול ב-{largest:.0%}), מעל המגבלה ({MAX_FACET_GROWTH:.0%}). "
+        "צריך להחליט איך לצמצם (SITE-DATA.md, סעיף Search, Options if the facets are too big).\n"
+        f"Facets left out of the search index: they would make it {total:.0%} bigger (its largest "
+        f"file {largest:.0%}), over the limit of {MAX_FACET_GROWTH:.0%}.",
+    )
+
+
 def count_files(out: Path) -> dict[str, int]:
     """Files in the site folder by part: p (products), s (search), d (deals), other."""
     parts = {"p": 0, "s": 0, "d": 0, "other": 0}
@@ -297,9 +326,9 @@ def main(argv: list[str] | None = None) -> int:
         unlocated += missing
 
     finish_products(products)
-    search_index = build_search_index({code: (p["n"], p.get("k")) for code, p in products.items()})
+    search_index, facet_growth, facet_warning = search_with_facets(products)
     plan = DealPlan()
-    warnings: list[str] = []
+    warnings: list[str] = [facet_warning] if facet_warning else []
     if args.compact:  # the deal files use store positions, which only format 2 has
         plan = plan_deals(args.data, args.chains, products, indexes)
         # p, s and the four small files (stores, categories, stats, meta) come first: the deals take
@@ -344,6 +373,9 @@ def main(argv: list[str] | None = None) -> int:
             "search_files": len(index_files),
             "search_bytes": sum(index_sizes),
             "search_largest_bytes": max(index_sizes, default=0),
+            "search_facets": facet_growth["kept"],
+            "search_facets_growth_percent": round(100 * facet_growth["total"], 1),
+            "search_facets_largest_growth_percent": round(100 * facet_growth["largest"], 1),
             "deals": plan.deals,
             "deal_files": len(deal_files),
             "deal_bytes": sum(f.stat().st_size for f in deal_files),

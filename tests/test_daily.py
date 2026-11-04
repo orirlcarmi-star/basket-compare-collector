@@ -286,6 +286,17 @@ def test_the_hourly_update_keeps_the_full_update_time_and_unchanged_is_not_a_pro
     )
 
 
+def test_a_facets_warning_reaches_the_summary_and_the_issue(day):
+    data, site = day
+    stats = json.loads((site / "stats.json").read_text(encoding="utf-8"))
+    stats["search_facets"] = False
+    stats["warnings"] = ["נתוני הצמצום לא נכנסו\nFacets left out"]
+    (site / "stats.json").write_text(json.dumps(stats), encoding="utf-8")
+    meta = make_meta(data, ["good"], site, utc("2026-11-04T04:30"))
+    assert meta["search_facets"] is False and meta["warnings"] == stats["warnings"]
+    assert "נתוני הצמצום לא נכנסו" in problems_in(meta, "success", "success")
+
+
 # --- the morning run is retried, and a missed one is started by the freshness check ---
 
 
