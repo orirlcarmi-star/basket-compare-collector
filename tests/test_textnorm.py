@@ -17,6 +17,10 @@ REFERENCE = [
     ("ש.חלב עם פיסטוק קלוי100ג", "שוקולד חלב עמ פיסטוק קלוי 100 ג"),
     ("שו.מריר 70% 100 גרם", "שוקולד מריר 70 100 גרמ"),
     ("שוקו בשקית", "שוקו בשקית"),  # no dot: the chocolate milk drink, unchanged
+    ("נ.רצפה מלון בוטיק 2ל XPO", "נוזל רצפה מלונ בוטיק 2 ל xpo"),
+    ("נ.פרקט בית מלון2ל", "נוזל פרקט בית מלונ 2 ל"),
+    ("נ.כלים לימון+משאבה1ל", "נוזל כלימ לימונ משאבה 1 ל"),
+    ("נ.זית", "נ זית"),  # a dot after נ is only "liquid" when a cleaning target follows
     ("ש.זית כתית", "ש זית כתית"),  # a dot after one letter is not chocolate unless a kind follows
 ]
 

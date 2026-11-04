@@ -5,7 +5,8 @@ The same rules must be used by whoever types a search, so the website has a copy
 
 1. Chains' abbreviations written with a dot are spelled out: "גב." -> גבינה, "יוג." -> יוגורט,
    "שוק." -> שוקולד (see ABBREVIATIONS; a bare "שוק" is a chicken thigh and is left alone), and
-   "שוקו.חלב" / "שו.חלב" / "ש.חלב" (also מריר, לבן) -> שוקולד חלב.
+   "שוקו.חלב" / "שו.חלב" / "ש.חלב" (also מריר, לבן) -> שוקולד חלב, and "נ.רצפה" / "נ.כלים" /
+   "נ.פרקט" (also כביסה, חלונות ...) -> נוזל רצפה ...
 2. Vowel points and cantillation marks are removed.
 3. Apostrophes, geresh and gershayim are removed: "קוטג'" -> קוטג, "ק\"ג" -> קג.
 4. Final letters become ordinary letters: ך ם ן ף ץ -> כ מ נ פ צ (so a word is the same
@@ -32,6 +33,8 @@ _ABBREVIATION = re.compile(
 # Milk, dark or white chocolate written in short: "שוקו.חלב", "שו.חלב", "ש.חלב" (a bare "שוקו"
 # is chocolate milk, a drink, so only the dotted forms followed by the kind count).
 _CHOCOLATE = re.compile(r"(?<![א-ת])(?:שוקו|שו|ש)\.\s*(?=חלב|מריר|לבן)")
+# "נ.רצפה", "נ.פרקט", "נ.כלים": נוזל (liquid) in short, when a cleaning target follows.
+_LIQUID = re.compile(r"(?<![א-ת])נ\.\s*(?=פרקט|רצפ|כלים|כביסה|חלונות|זכוכית|אמבט|שירותים)")
 _POINTS = re.compile("[֑-ׇ]")  # cantillation, vowel points, maqaf is handled below
 _APOSTROPHES = re.compile("[\"'`׳״’‘“”]")
 _FINAL = str.maketrans("ךםןףץ", "כמנפצ")
@@ -54,6 +57,7 @@ def normalize(text: str) -> str:
     """The text in normal form: words of letters and digits separated by single spaces."""
     text = _ABBREVIATION.sub(lambda m: f" {ABBREVIATIONS[m[1]]} ", text)
     text = _CHOCOLATE.sub(" שוקולד ", text)
+    text = _LIQUID.sub(" נוזל ", text)
     text = _POINTS.sub("", text.replace("־", " "))
     text = _APOSTROPHES.sub("", text)
     return _LETTER_DIGIT.sub(" ", " ".join(_WORD.findall(text.translate(_FINAL).lower())))

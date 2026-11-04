@@ -150,6 +150,32 @@ NAMES = [
     ("חטיף בטעם גבינה", "snacks"),
     ("גלידה בטעם וניל 1 ליטר", "frozen"),
     ("תה בטעם לימון 25 שקיות", "drinks"),
+    # --- round 2 (real Shufersal names): the fruit-drink rule must not catch scented products ---
+    ("נ.פרקט בית מלון2ל LU", "cleaning"),
+    ("נ.רצפה מלון בוטיק 2ל XPO", "cleaning"),
+    ("נוזל רצפה מלון 2ל ריצפז", "cleaning"),
+    ("ריצפז פרש מלון מפנק 2ל", "cleaning"),
+    ("נ.כלים לימון+משאבה1ל XPO", "cleaning"),
+    ("פיניש פאוור גל לימון1ל", "cleaning"),
+    ("פיניש להבקרה לימון800מל", "cleaning"),
+    ("פנטסטיק לניקוי לימון 4ל", "cleaning"),
+    ("קליר ג'ל AL גילט 70מ\"ל", "hygiene"),  # a shaving gel, not the juice brand
+    ("קליר גל גילט ספורט 70מל", "hygiene"),
+    ("מפת שולחן אל בד בורדו", "home"),  # "בורדו" is a colour here, not a wine
+    ("מ.שיניים הלבנה עדינה75*2", "hygiene"),  # whitening toothpaste, not a laundry whitener
+    ("מש.שיניים מרידול הלבנה75", "hygiene"),
+    ("מש.שיניים טוטאל הלבנה100", "hygiene"),
+    ("ופלים בטעם שוקולד 500 גר", "snacks"),  # the flavour is ignored, the product is wafers
+    ("ופלים מן בטעם שוקולד200ג", "snacks"),
+    ("נטיפים בטעם שוקולד 250ג", "snacks"),
+    ("ופלים בטעם לימון 500 גרם", "snacks"),
+    # --- neighbours: scents and flavours stay what they are ---
+    ("שמפו תפוח 400 מל", "hygiene"),
+    ("ג'ל רחצה אשכולית 500מל", "hygiene"),
+    ("מרכך כביסה לבנדר 2 ליטר", "cleaning"),
+    ("חומץ תפוחים 1 ליטר", "pantry"),
+    ("פריגת קליר בטעם אננס1.5ל", "drinks"),
+    ("קליר שמפו נגד קשקשים", "hygiene"),
 ]
 
 # Make-up, nail and lip products are kept out of every rule: whatever else the name says, it is
