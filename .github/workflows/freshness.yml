@@ -54,19 +54,32 @@ jobs:
       - name: Start the daily run if the morning one did not publish
         # The daily run is scheduled, and GitHub sometimes does not start scheduled runs. From 07:00
         # to 22:59 in Israel, when nothing was published today, no daily run is waiting or running
-        # and none was started in the last two hours (so a failing run is not repeated every
-        # hour), start it here. The daily run's own gate checks again.
+        # and none was started in the last two hours, start it here. At most three daily runs
+        # work in one day (the morning one and two more): after that, only an issue. The daily
+        # run's own gate checks again. The decisions are in src/collector/daily.py (should_catch_up).
         env:
           GH_TOKEN: ${{ github.token }}
+          LIMIT_TITLE: "העדכון היומי לא פורסם היום, גם אחרי שלוש ריצות"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/daily.yml
         run: |
-          go=$(python -m collector.daily catch-up --meta meta.json | grep -o 'run=.*' | cut -d= -f2)
-          busy=$(gh run list --workflow daily.yml --json status --jq '[.[] | select(.status != "completed")] | length')
-          last=$(gh run list --workflow daily.yml --limit 1 --json createdAt --jq '.[0].createdAt // empty')
-          recent=0
-          if [ -n "$last" ] && [ $(( $(date +%s) - $(date -d "$last" +%s) )) -lt 7200 ]; then recent=1; fi
-          if [ "$go" = "true" ] && [ "${busy:-0}" = "0" ] && [ "$recent" = "0" ]; then
+          gh run list --workflow daily.yml --limit 100 \
+            --json databaseId,status,createdAt,startedAt,updatedAt > runs.json || echo '[]' > runs.json
+          out=$(python -m collector.daily catch-up --meta meta.json --runs runs.json 2> reason.txt)
+          cat reason.txt
+          go=$(echo "$out" | sed -n 's/^run=//p')
+          limited=$(echo "$out" | sed -n 's/^limit=//p')
+          existing=$(gh issue list --state open --json number,title \
+            | jq -r --arg t "$LIMIT_TITLE" 'map(select(.title == $t))[0].number // empty')
+          if [ "$go" = "true" ]; then
             echo "Nothing was published today: starting the daily run"
             gh workflow run daily.yml
-          else
-            echo "No catch-up (needed: $go, daily runs waiting or running: ${busy:-0}, started in the last 2 hours: $recent)"
+          elif [ "$limited" = "true" ]; then
+            printf 'שלוש ריצות יומיות כבר עבדו היום ועדיין לא פורסם עדכון. לא תתחיל ריצה נוספת מעצמה, כדי לא להעמיס על שרתי הרשתות.\n\nפרטים: %s\n' "$RUN_URL" > limit.md
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body-file limit.md
+            else
+              gh issue create --title "$LIMIT_TITLE" --body-file limit.md
+            fi
+          elif grep -q "already updated today" reason.txt && [ -n "$existing" ]; then
+            gh issue close "$existing" --comment "העדכון של היום פורסם, הבעיה נפתרה."
           fi

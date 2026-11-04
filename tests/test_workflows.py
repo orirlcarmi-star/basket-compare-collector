@@ -119,5 +119,20 @@ def test_the_freshness_check_starts_a_missed_daily_run():
     )  # every hour of the day, off the round hour
     assert "collector.daily catch-up" in freshness
     assert "gh workflow run daily.yml" in freshness
-    assert "daily runs waiting or running" in freshness  # never piles a second run on a running one
-    assert "started in the last 2 hours" in freshness  # nor repeats a failing run every hour
+    # never piles a second run on a running one, nor repeats a failing run every hour: these
+    # decisions are in Python now (should_catch_up) and are tested in test_daily.py
+    assert "should_catch_up" in freshness
+
+
+def test_automatic_runs_are_limited_to_three_working_runs_a_day():
+    daily, freshness = text("daily.yml"), text("freshness.yml")
+    gate = daily.split("  gate:")[1].split("\n  collect:")[0]
+    assert "actions: read" in gate and "--runs runs.json" in gate and "--current-run" in gate
+    assert "gh run list --workflow daily.yml" in gate
+    assert "catch-up --meta meta.json --runs runs.json" in freshness
+    assert 'gh issue create --title "$LIMIT_TITLE"' in freshness  # after the limit only an issue
+    assert "three daily runs" in freshness
+    # the numbers the text promises are the ones in the code
+    from collector.daily import MAX_WORKING_RUNS_PER_DAY
+
+    assert MAX_WORKING_RUNS_PER_DAY == 3
