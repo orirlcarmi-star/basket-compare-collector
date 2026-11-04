@@ -107,7 +107,13 @@ def _source(chain: str) -> tuple[list[str], Callable[[str], bytes]]:
     """Names of the partial price files on offer, and how to download one."""
     if chain == "shufersal":
         links = {link.name: link for link in shufersal.list_all(shufersal.CATEGORY_PRICE)}
-        return list(links), lambda name: shufersal.fetch(links[name].url)
+
+        def fetch_file(name: str) -> bytes:
+            # the links were read some time ago: a signature that expired is renewed (once)
+            store = int(store_and_stamp(name)[0])
+            return shufersal.download(links[name], shufersal.CATEGORY_PRICE, store)
+
+        return list(links), fetch_file
     session = cerberus.Session(cerberus.USERNAMES[chain])
     return [f.name for f in session.list_files()], session.download
 

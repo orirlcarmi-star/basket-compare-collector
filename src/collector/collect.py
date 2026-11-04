@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 from collector.deals import usable_deals
 from collector.encoding import decode_price_file
@@ -42,12 +43,20 @@ def fresh_only(names: Iterable[str], now: datetime) -> list[str]:
     return [n for n in names if (d := file_date(n)) is not None and d >= cutoff]
 
 
+class StoreWork(NamedTuple):
+    """How to get one store's files. `price()` gives (file name, content) of the newest full price
+    file, or None when the store has none; `promo()` gives the content of the promotion file, or
+    None. They are called one after the other, store by store, so that a download starts right
+    after the link to it was read (Shufersal's links expire)."""
+
+    price: Callable[[], tuple[str, bytes] | None]
+    promo: Callable[[], bytes | None]
+
+
 def _write_chain(
     chain_dir: Path,
     stores_raw: bytes,
-    price_files: dict[str, str],
-    promo_files: dict[str, str],
-    download: Callable[[str], bytes],
+    work: dict[str, StoreWork],
     limit: int | None,
 ) -> int:
     stores = parse_stores_file(decode_price_file(stores_raw))
@@ -55,24 +64,26 @@ def _write_chain(
     (chain_dir / "stores.json").write_text(
         "[" + ",".join(to_json(s) for s in stores) + "]", encoding="utf-8"
     )
-    print(
-        f"{chain_dir.name}: {len(stores)} stores, {len(price_files)} fresh price files, "
-        f"{len(promo_files)} fresh promotion files"
-    )
+    print(f"{chain_dir.name}: {len(stores)} stores, {len(work)} to fetch", flush=True)
 
-    failures = deal_count = 0
-    applied: dict[
-        str, str
-    ] = {}  # store -> stamp of the full price file taken in (for collector.hourly)
-    for count, (store, name) in enumerate(sorted(price_files.items()), start=1):
+    failures = deal_count = taken = 0
+    # store -> stamp of the full price file taken in (for collector.hourly)
+    applied: dict[str, str] = {}
+    for count, (store, how) in enumerate(sorted(work.items()), start=1):
         if limit is not None and count > limit:
             break
         try:
-            parsed = parse_price_file(decode_price_file(download(name)))
+            found = how.price()
+            if found is None:  # a store without a (fresh) price file
+                continue
+            name, raw = found
+            parsed = parse_price_file(decode_price_file(raw))
             write_record(chain_dir / "prices" / f"{store}.json", parsed)
             applied[same_store(store)] = file_stamp(name)
-            if store in promo_files:
-                promos = parse_promo_file(decode_price_file(download(promo_files[store])))
+            taken += 1
+            promo_raw = how.promo()
+            if promo_raw is not None:
+                promos = parse_promo_file(decode_price_file(promo_raw))
                 deals, _ = usable_deals(promos, israel_now())
                 deal_count += len(deals)
                 (chain_dir / "deals").mkdir(exist_ok=True)
@@ -82,23 +93,61 @@ def _write_chain(
         except Exception as error:  # one bad file must not stop the run
             failures += 1
             print(f"  store {store}: FAILED {type(error).__name__}: {error}", file=sys.stderr)
+        if count % 50 == 0:
+            print(f"  {chain_dir.name}: {count} of {len(work)} stores", flush=True)
     (chain_dir / "applied.json").write_text(json.dumps(applied, sort_keys=True), encoding="utf-8")
-    print(f"{chain_dir.name}: {deal_count:,} usable deals in total")
+    print(f"{chain_dir.name}: {taken} price files, {deal_count:,} usable deals, {failures} failed")
     return failures
 
 
+def _fresh(name: str, now: datetime) -> bool:
+    date = file_date(name)
+    return date is not None and date >= now - MAX_FILE_AGE
+
+
+def shufersal_work(store_ids: list[str], now: datetime) -> dict[str, StoreWork]:
+    """Per store: list its files, then download them at once (see sources/shufersal.py)."""
+
+    def price_for(store: str) -> Callable[[], tuple[str, bytes] | None]:
+        number = int(store)
+
+        def get() -> tuple[str, bytes] | None:
+            link = shufersal.latest_link(shufersal.CATEGORY_PRICE_FULL, number)
+            if link is None or not _fresh(link.name, now):
+                return None
+            raw = shufersal.download(link, shufersal.CATEGORY_PRICE_FULL, number)
+            return link.name, raw
+
+        return get
+
+    def promo_for(store: str) -> Callable[[], bytes | None]:
+        number = int(store)
+
+        def get() -> bytes | None:
+            link = shufersal.latest_link(shufersal.CATEGORY_PROMO_FULL, number)
+            if link is None or not _fresh(link.name, now):
+                return None
+            return shufersal.download(link, shufersal.CATEGORY_PROMO_FULL, number)
+
+        return get
+
+    return {store: StoreWork(price_for(store), promo_for(store)) for store in store_ids}
+
+
 def collect_shufersal(out: Path, limit: int | None) -> int:
-    stores_link = shufersal.list_all(shufersal.CATEGORY_STORES)[0]
-    links = {link.name: link for link in shufersal.list_all(shufersal.CATEGORY_PRICE_FULL)}
-    links.update({link.name: link for link in shufersal.list_all(shufersal.CATEGORY_PROMO_FULL)})
-    now = datetime.now(UTC)
+    stores_link = shufersal.latest_link(shufersal.CATEGORY_STORES, 0)
+    if stores_link is None:
+        raise RuntimeError("Shufersal's list of stores has no file")
+    stores_raw = shufersal.download(stores_link, shufersal.CATEGORY_STORES, 0)  # right away
+    store_ids = sorted(
+        {
+            s.store_id
+            for s in parse_stores_file(decode_price_file(stores_raw))
+            if s.store_id.isdigit()
+        }
+    )
     return _write_chain(
-        out / "shufersal",
-        shufersal.fetch(stores_link.url),
-        latest_per_store(fresh_only([n for n in links if kind_of(n) == "pricefull"], now)),
-        latest_per_store(fresh_only([n for n in links if kind_of(n) == "promofull"], now)),
-        lambda name: shufersal.fetch(links[name].url),
-        limit,
+        out / "shufersal", stores_raw, shufersal_work(store_ids, datetime.now(UTC)), limit
     )
 
 
@@ -111,9 +160,16 @@ def collect_cerberus(chain: str, out: Path, limit: int | None) -> int:
     promos = latest_per_store(fresh_only([n for n in names if kind_of(n) == "promofull"], now))
     if not latest:  # the file names may follow a pattern we do not know yet
         print(f"  no fresh price files; {len(names)} files, e.g. {sorted(names)[-5:]}")
-    return _write_chain(
-        out / chain, session.download(stores_name), latest, promos, session.download, limit
-    )
+
+    def work_for(store: str, name: str) -> StoreWork:
+        promo_name = promos.get(store)
+        return StoreWork(
+            lambda: (name, session.download(name)),
+            lambda: session.download(promo_name) if promo_name else None,
+        )
+
+    work = {store: work_for(store, name) for store, name in latest.items()}
+    return _write_chain(out / chain, session.download(stores_name), work, limit)
 
 
 def main(argv: list[str] | None = None) -> int:

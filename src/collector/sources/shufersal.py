@@ -1,15 +1,22 @@
 """Shufersal's public price-transparency site (prices.shufersal.co.il).
 
 The site lists files in an HTML table. Each row links to a gzip file on public
-cloud storage through a signed URL that expires within hours, so a file must be
-downloaded soon after its link is read.
+cloud storage through a signed URL that expires (within minutes to hours), so a file must be
+downloaded right after its link is read. Listing everything first and downloading afterwards
+does not work: reading all the pages took 15 minutes and the first links had expired (HTTP 403
+"Server failed to authenticate the request ... signature", 2026-11-04). So: list one store's
+files, download them at once, go to the next store (`latest_link`, `download`); and when a
+download still answers with an expired signature, ask for a fresh link to the same file once.
 """
 
 import html
 import re
+import urllib.error
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.request import Request, urlopen
 
+from collector.files import file_stamp
 from collector.retry import with_retries
 
 BASE_URL = "https://prices.shufersal.co.il"
@@ -80,3 +87,55 @@ def fetch(url: str, timeout: float = 60) -> bytes:
             return response.read()
 
     return with_retries(once)
+
+
+# What the storage answers when a signed link has expired or its signature is wrong. Other 403s
+# (the server refusing us, a blocked address) say something else and are not "try a new link".
+_SIGNATURE_WORDS = ("authenticationfailed", "failed to authenticate", "signature", "signed expiry")
+
+
+def is_expired_signature(error: Exception) -> bool:
+    """True for HTTP 403 from the storage because of the signature (an old link)."""
+    if not isinstance(error, urllib.error.HTTPError) or error.code != 403:
+        return False
+    try:
+        body = error.read(4096).decode("utf-8", errors="replace").lower()
+    except Exception:  # an unreadable answer: assume it is not the signature
+        return False
+    return any(word in body for word in _SIGNATURE_WORDS)
+
+
+def latest_link(category: int, store_number: int, listing=None) -> FileLink | None:
+    """The newest file of a category for one store, from a listing read right now.
+    `listing` is a stand-in for `list_all` in tests."""
+    links = (listing or list_all)(category, store_number)
+    return max(links, key=lambda link: file_stamp(link.name), default=None)
+
+
+def download(
+    link: FileLink,
+    category: int,
+    store_number: int,
+    listing=None,
+    getter: Callable[[str], bytes] | None = None,
+) -> bytes:
+    """Download the file of a link read just now. If the answer is an expired signature, read the
+    store's listing again, take the new link to the same file and try once more. Any other error,
+    including any other 403, is raised as it is."""
+    get = getter or fetch
+    try:
+        return get(link.url)
+    except urllib.error.HTTPError as error:
+        if not is_expired_signature(error):
+            raise
+        fresh = next(
+            (
+                item
+                for item in (listing or list_all)(category, store_number)
+                if item.name == link.name
+            ),
+            None,
+        )
+        if fresh is None:
+            raise
+        return get(fresh.url)
