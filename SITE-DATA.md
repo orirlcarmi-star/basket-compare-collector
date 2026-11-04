@@ -24,7 +24,8 @@ Every morning the pipeline replaces the files of the release **`site-data-latest
   The reference decoder is `collector.compact.restore_prices`.
 * **Unit price** = the shopper's price ÷ `z[0]`, per `z[1]` (so 7.35 for a `["1.5","l"]` product is 4.90 per litre).
   Products with no readable size have no `z`.
-* `d/<chain>/<id>.json` — one file per deal, fetched only for the products in the basket. See "Deals" below.
+* `d/<chain>/<n>.json` — the deals of a chain in 256 bucket files, n = hash of the deal id modulo 256. A basket fetches only
+  the buckets of the deals its products mention. See "Deals" below.
 * `categories.json` — the 14 categories `{id, name}`: dairy, meat, fish, produce, bakery, pantry, snacks, drinks, frozen,
   cleaning, hygiene, baby, home and **pets (חיות מחמד, new)**. A product with no `k` is "לא מסווג". A product is left
   without a category when no rule is sure; make-up, nail and lip products are deliberately never given one.
@@ -37,11 +38,27 @@ Every morning the pipeline replaces the files of the release **`site-data-latest
 
 The old format (format 1: `publish` without `--compact`) is still available; the pipeline publishes format 2 only.
 
-## Deals (`d/<chain>/<id>.json`, format 2 only)
+## Deals (`d/<chain>/<n>.json`, format 2 only)
 
-A product's entry for a chain lists `"d": ["<id>", ...]`, the deals in which it takes part. The browser fetches
-`d/<chain>/<id>.json` for each id the basket touches. Only deals the calculator can price are published:
-"X for Y" deals and fixed prices, with no coupon and no minimum basket amount.
+A product's entry for a chain lists `"d": ["<id>", ...]`, the deals in which it takes part. **The deals of a chain are
+spread over bucket files** `d/<chain>/<n>.json`:
+
+* `n` = **FNV-1a (32 bit) of the deal id, modulo 256**. The id is the string, with its variant suffix such as `"-2"`.
+  FNV-1a is the function of the product files `p/` (offset basis `0x811C9DC5`, prime `0x01000193`, over the character
+  codes of the id), only the modulus differs (256 here, 8,192 there).
+* a file is a map `{"<deal id>": <the deal>, ...}`; the deal is the object described below, exactly as it was before the
+  buckets. The ids in a product's `"d"` list are the same ids as before.
+* a bucket with no deals has **no file**: a missing file means "no such deal".
+* the browser fetches `d/<chain>/<n>.json` for each id the basket touches (the same bucket serves many ids), looks the id
+  up in the map, and applies the deal. At most 256 files per chain: 1,024 for the four chains.
+
+To check a computation: the id `"7"` has hash 839689206, so n = 246; `"7-2"`: 2298208649, n = 137; `"4662141"`:
+845991053, n = 141; `"4662141-2"`: 3546552214, n = 150; `"4662141-3"`: 3563329833, n = 41. (Standard FNV-1a test vectors:
+`""` -> 0x811C9DC5, `"a"` -> 0xE40C292C, `"foobar"` -> 0xBF9CF968.) `collector.sitedeals.read_deal(site_dir, chain, id)` is
+the reference reader.
+
+Only deals the calculator can price are published: "X for Y" deals and fixed prices, with no coupon and no minimum basket
+amount.
 
 | Field | Meaning |
 |---|---|
@@ -64,7 +81,13 @@ and again up to `m` units in all; every other unit costs its normal price. Examp
 Basket: three units of `7290000000015` at 12.90 → at a store of price group `g1` (or at the store in position 14) the first
 two cost 20.00 together and the third 12.90: 32.90 instead of 38.70. At any other store the deal does not apply.
 
-**Variants:** a promotion id whose terms differ between stores has one file per variant: `7`, `7-2`, `7-3`... A variant
+**A bucket file** (`d/ramilevi/246.json`, holding the deal `"7"` and any other deal whose id hashes to 246):
+
+```json
+{"7":{"t":"2ב20 גבינה","q":2,"p":"20.00","m":6,"e":"2026-11-12T23:59","i":["7290000000015","7290004131074"],"s":["g1",14]}}
+```
+
+**Variants:** a promotion id whose terms differ between stores has one entry per variant: `7`, `7-2`, `7-3`... A variant
 exists only when `q`, `p`, `m`, `c` or `e` differ. The variant that applies in the most stores has the plain id.
 Different wording does not make a variant, and neither do the items: stores that sell other kinds ("2 for 13.90 on
 herbs" lists 3, 4 or 5 barcodes depending on the store) share **one** file whose `i` is all their barcodes together
@@ -166,7 +189,10 @@ files** (4.2 MB; the daily file budget is 18,000 for everything). 8,192 + 749 + 
 accepts, so nothing was published. Left out of the deals: 6,755 whole-number-less (weight) deals, 4,278 with no product the
 chain sells in the files, 707 credit-card deals.
 
-**What happens now when the deals do not fit:** `publish` holds the deals back, publishes the prices (and search, and
+**Solved (option 1 below was chosen by the product owner):** the deals are in bucket files, 256 per chain at most, so
+22,342 deals take about 1,000 files. See "Deals" above.
+
+**What happens when the deals do not fit** (a safety net that stays): `publish` holds the deals back, publishes the prices (and search, and
 categories) as usual, and says so: `stats.json` / `meta.json` carry `deals_held_back` and a warning, and the daily issue
 lists it. Prices are never held back for the deals. `d/` is then absent and no product has a `"d"` list.
 
