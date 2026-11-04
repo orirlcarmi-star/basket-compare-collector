@@ -140,6 +140,8 @@ def make_meta(
         "deals_left_out": stats.get("deals_left_out", {}),
         "files_total": stats.get("files_total", 0),
         "files_by_part": stats.get("files_by_part", {}),
+        "deals_held_back": stats.get("deals_held_back", 0),
+        "warnings": stats.get("warnings", []),
         "chains": report,
     }
 
@@ -155,6 +157,7 @@ def problems_in(meta: dict | None, collect_result: str = "", publish_result: str
         if not found:
             found.append("לא נוצר קובץ סיכום לריצה")
         return found
+    found += [w.split("\n")[0] for w in meta.get("warnings", [])]  # the Hebrew line of each
     for chain, info in meta["chains"].items():
         if info["status"] == "kept previous":
             found.append(

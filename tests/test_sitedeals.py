@@ -288,3 +288,52 @@ def test_message_names_the_biggest_part():
     text = publish.too_many_files({"p": 8192, "s": 700, "d": 12000, "other": 5}, 18_000)
     assert text and "'d'" in text and "20,000" in text
     assert publish.too_many_files({"p": 8192, "s": 700, "d": 9000, "other": 5}, 18_000) is None
+
+
+# --- too many deal files must not stop the prices ---
+
+
+def test_deals_that_do_not_fit_are_held_back_and_the_prices_still_go_out(
+    with_deals, monkeypatch, capsys
+):
+    tmp_path, codes, _ = with_deals
+    assert run_publish(tmp_path, "with", "--compact") == 0
+    with_stats = json.loads((tmp_path / "with" / "stats.json").read_text(encoding="utf-8"))
+    assert with_stats["deal_files"] == 2 and with_stats["warnings"] == []
+    others = with_stats["files_total"] - 2
+
+    # room for everything but the two deal files (+1: meta.json, which is added after publish)
+    monkeypatch.setattr(publish, "MAX_SITE_FILES", others + 1)
+    assert run_publish(tmp_path, "held", "--compact") == 0  # prices are published all the same
+    stats = json.loads((tmp_path / "held" / "stats.json").read_text(encoding="utf-8"))
+    assert stats["deal_files"] == 0 and stats["deals_held_back"] == 2
+    assert "מבצעים לא פורסמו" in stats["warnings"][0]
+    assert not (tmp_path / "held" / "d").exists()
+    products = products_of(tmp_path / "held")
+    assert all("d" not in p["c"].get("alpha", {}) for p in products.values())  # no dangling ids
+    assert restore_prices(tmp_path / "held")["alpha"]  # prices intact
+    assert "Deals not published" in capsys.readouterr().err
+
+
+def test_a_stale_deal_folder_is_removed_when_deals_are_held_back(with_deals, monkeypatch):
+    tmp_path, _, _ = with_deals
+    assert run_publish(tmp_path, "site", "--compact") == 0
+    assert (tmp_path / "site" / "d" / "alpha").exists()
+    others = json.loads((tmp_path / "site" / "stats.json").read_text("utf-8"))["files_total"] - 2
+    monkeypatch.setattr(publish, "MAX_SITE_FILES", others + 1)
+    assert run_publish(tmp_path, "site", "--compact") == 0  # same folder, deals now held back
+    assert not (tmp_path / "site" / "d").exists()
+
+
+def test_the_warning_reaches_the_summary_and_the_issue_text(with_deals, monkeypatch, tmp_path):
+    from collector.daily import make_meta, problems_in
+    from tests.test_daily import utc
+
+    root, _, _ = with_deals
+    assert run_publish(root, "full", "--compact") == 0
+    others = json.loads((root / "full" / "stats.json").read_text("utf-8"))["files_total"] - 2
+    monkeypatch.setattr(publish, "MAX_SITE_FILES", others + 1)
+    assert run_publish(root, "held", "--compact") == 0
+    meta = make_meta(root / "data", ["alpha"], root / "held", utc("2026-11-04T10:00"))
+    assert meta["deals_held_back"] == 2 and "מבצעים לא פורסמו" in meta["warnings"][0]
+    assert any("מבצעים לא פורסמו" in line for line in problems_in(meta, "success", "success"))

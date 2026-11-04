@@ -13,6 +13,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+from collector.retry import with_retries
+
 BASE_URL = "https://url.publishedprices.co.il"
 USER_AGENT = (
     "basket-compare-collector (+https://github.com/orirlcarmi-star/basket-compare-collector)"
@@ -75,13 +77,20 @@ class Session:
         self._csrf = csrf_token(self._get("/file"))
 
     def _get(self, path: str) -> str:
-        with self._opener.open(BASE_URL + path, timeout=self._timeout) as response:
-            return response.read().decode("utf-8", errors="replace")
+        def once() -> str:
+            with self._opener.open(BASE_URL + path, timeout=self._timeout) as response:
+                return response.read().decode("utf-8", errors="replace")
+
+        return with_retries(once)
 
     def _post(self, path: str, fields: dict[str, str]) -> str:
         data = urllib.parse.urlencode(fields).encode()
-        with self._opener.open(BASE_URL + path, data=data, timeout=self._timeout) as response:
-            return response.read().decode("utf-8", errors="replace")
+
+        def once() -> str:
+            with self._opener.open(BASE_URL + path, data=data, timeout=self._timeout) as response:
+                return response.read().decode("utf-8", errors="replace")
+
+        return with_retries(once)
 
     def list_files(self) -> list[RemoteFile]:
         payload = self._post(
@@ -101,5 +110,10 @@ class Session:
 
     def download(self, name: str) -> bytes:
         quoted = urllib.parse.quote(name)
-        with self._opener.open(f"{BASE_URL}/file/d/{quoted}", timeout=self._timeout) as response:
-            return response.read()
+
+        def once() -> bytes:
+            url = f"{BASE_URL}/file/d/{quoted}"
+            with self._opener.open(url, timeout=self._timeout) as response:
+                return response.read()
+
+        return with_retries(once)
