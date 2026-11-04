@@ -125,6 +125,57 @@ NAMES = [
     ("עוף טחון", "meat"),
     ("חלב קוקוס 400 מל", "pantry"),
     ("מי קוקוס 330 מל", "drinks"),
+    # --- real Shufersal names that were still wrong or unclassified (6 stores, ~9,000 products) ---
+    ("ספרינג מנגו בננה1.5 ליטר", "drinks"),  # fruit + a volume: a drink, not produce
+    ("פריגת קליר בטעם אננס1.5ל", "drinks"),
+    ("שוקו.חלב אוורירי100ג פפה", "snacks"),  # milk chocolate in short: was dairy
+    ("שו.חלב לוז לגרנד150לינדט", "snacks"),
+    ("ש.חלב עם פיסטוק קלוי100ג", "snacks"),
+    ("סקיטלס בטעם פירות 152 גר", "snacks"),  # "flavoured with fruit" is not fruit
+    ("אבקת הלבנה רן 350ג", "cleaning"),  # laundry whitener: was pantry
+    ("קלינקס", "hygiene"),
+    ("ניוטרוגינה", "hygiene"),
+    ("פרינגלס", "snacks"),
+    ("אורביט", "snacks"),
+    ("אוכמניות", "produce"),
+    ("שאבלי", "drinks"),
+    ("חמאת בוטנים", "pantry"),
+    # --- the same rules on neighbours: nothing that worked must break ---
+    ("תפוח עץ אדום", "produce"),
+    ('לימון 1 ק"ג', "produce"),  # a weight, not a volume: still fruit
+    ("מיץ תפוזים 1 ליטר", "drinks"),
+    ("שוקו בשקית 1 ליטר", "dairy"),  # a bare "שוקו" is the chocolate milk drink
+    ("שוקולד חלב 100 גרם", "snacks"),
+    ("יוגורט בטעם תות 200 גרם", "dairy"),  # flavoured yoghurt is yoghurt
+    ("חטיף בטעם גבינה", "snacks"),
+    ("גלידה בטעם וניל 1 ליטר", "frozen"),
+    ("תה בטעם לימון 25 שקיות", "drinks"),
+    # --- round 2 (real Shufersal names): the fruit-drink rule must not catch scented products ---
+    ("נ.פרקט בית מלון2ל LU", "cleaning"),
+    ("נ.רצפה מלון בוטיק 2ל XPO", "cleaning"),
+    ("נוזל רצפה מלון 2ל ריצפז", "cleaning"),
+    ("ריצפז פרש מלון מפנק 2ל", "cleaning"),
+    ("נ.כלים לימון+משאבה1ל XPO", "cleaning"),
+    ("פיניש פאוור גל לימון1ל", "cleaning"),
+    ("פיניש להבקרה לימון800מל", "cleaning"),
+    ("פנטסטיק לניקוי לימון 4ל", "cleaning"),
+    ("קליר ג'ל AL גילט 70מ\"ל", "hygiene"),  # a shaving gel, not the juice brand
+    ("קליר גל גילט ספורט 70מל", "hygiene"),
+    ("מפת שולחן אל בד בורדו", "home"),  # "בורדו" is a colour here, not a wine
+    ("מ.שיניים הלבנה עדינה75*2", "hygiene"),  # whitening toothpaste, not a laundry whitener
+    ("מש.שיניים מרידול הלבנה75", "hygiene"),
+    ("מש.שיניים טוטאל הלבנה100", "hygiene"),
+    ("ופלים בטעם שוקולד 500 גר", "snacks"),  # the flavour is ignored, the product is wafers
+    ("ופלים מן בטעם שוקולד200ג", "snacks"),
+    ("נטיפים בטעם שוקולד 250ג", "snacks"),
+    ("ופלים בטעם לימון 500 גרם", "snacks"),
+    # --- neighbours: scents and flavours stay what they are ---
+    ("שמפו תפוח 400 מל", "hygiene"),
+    ("ג'ל רחצה אשכולית 500מל", "hygiene"),
+    ("מרכך כביסה לבנדר 2 ליטר", "cleaning"),
+    ("חומץ תפוחים 1 ליטר", "pantry"),
+    ("פריגת קליר בטעם אננס1.5ל", "drinks"),
+    ("קליר שמפו נגד קשקשים", "hygiene"),
 ]
 
 # Make-up, nail and lip products are kept out of every rule: whatever else the name says, it is
@@ -134,6 +185,9 @@ NOT_CLASSIFIED = [
     "מסיר קוטיקולה נייל סטורי",
     "עפרון פלמפינג קוקוס",
     "מסקרה שחורה 10 מל",
+    "טמפונים 16 יחידות",  # left unclassified, like the others in this list
+    "או בה נורמל",
+    "קרפרי",
 ]
 
 
