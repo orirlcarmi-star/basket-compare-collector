@@ -10,6 +10,8 @@ import re
 from dataclasses import dataclass
 from urllib.request import Request, urlopen
 
+from collector.retry import with_retries
+
 BASE_URL = "https://prices.shufersal.co.il"
 USER_AGENT = (
     "basket-compare-collector (+https://github.com/orirlcarmi-star/basket-compare-collector)"
@@ -68,5 +70,9 @@ def list_all(category: int, store_id: int = 0) -> list[FileLink]:
 
 def fetch(url: str, timeout: float = 60) -> bytes:
     request = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https hosts only
-        return response.read()
+
+    def once() -> bytes:
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https hosts only
+            return response.read()
+
+    return with_retries(once)

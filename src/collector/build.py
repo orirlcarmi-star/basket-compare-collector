@@ -171,6 +171,7 @@ def write_ready(
 
 
 def write_last_run(chain_dir: Path, result: str, problems: list[str]) -> None:
+    chain_dir.mkdir(parents=True, exist_ok=True)  # a chain that collected nothing has no folder yet
     (chain_dir / "last_run.json").write_text(
         json.dumps(
             {"result": result, "problems": problems, "at": datetime.now(UTC).isoformat()},
