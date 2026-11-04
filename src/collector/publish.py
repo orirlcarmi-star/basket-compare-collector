@@ -47,7 +47,7 @@ from collector.locate import apply_manual, load_manual
 from collector.names import better_name
 from collector.searchindex import build_index as build_search_index
 from collector.searchindex import write_index
-from collector.sitedeals import build_chain_deals, load_store_deals
+from collector.sitedeals import bucket_deals, build_chain_deals, fnv1a, load_store_deals
 from collector.unitprice import contents
 
 BUCKETS = 8192
@@ -58,11 +58,7 @@ MAX_SITE_FILES = 18_000
 
 def bucket_of(code: str) -> int:
     """FNV-1a, 32 bit — must match the website's copy (character codes of the barcode)."""
-    h = 0x811C9DC5
-    for char in code:
-        h ^= ord(char)
-        h = (h * 0x01000193) & 0xFFFFFFFF
-    return h % BUCKETS
+    return fnv1a(code) % BUCKETS
 
 
 def chain_products(chain: str, ready: dict, into: dict[str, dict]) -> None:
@@ -158,9 +154,9 @@ def published_prices(chain: str, ready: dict) -> dict[str, dict[str, str]]:
 class DealPlan:
     """The deal files and product references of a run, worked out but not yet written."""
 
-    files: dict[str, dict] = dataclass_field(
-        default_factory=dict
-    )  # "d/<chain>/<id>.json" -> content
+    # "d/<chain>/<n>.json" -> {deal id: deal}; deals counts the deals those files hold
+    files: dict[str, dict] = dataclass_field(default_factory=dict)
+    deals: int = 0
     refs: dict[str, dict[str, list[str]]] = dataclass_field(
         default_factory=dict
     )  # chain -> code -> ids
@@ -176,7 +172,8 @@ class DealPlan:
 
 
 def plan_deals(data: Path, chains: list[str], products: dict, indexes: dict) -> DealPlan:
-    """Work out d/<chain>/<id>.json for every chain with deals (collector.sitedeals)."""
+    """Work out d/<chain>/<n>.json (256 buckets per chain, collector.sitedeals) for every chain
+    with deals."""
     plan = DealPlan()
     now = israel_now()
     for chain in chains:
@@ -188,7 +185,9 @@ def plan_deals(data: Path, chains: list[str], products: dict, indexes: dict) -> 
             load_store_deals(folder), indexes[chain], sold, now
         )
         plan.skipped += left_out
-        plan.files.update({f"d/{chain}/{deal_id}.json": body for deal_id, body in files.items()})
+        plan.deals += len(files)
+        for number, bucket in bucket_deals(files).items():
+            plan.files[f"d/{chain}/{number}.json"] = bucket
         plan.refs[chain] = by_item
     return plan
 
@@ -215,7 +214,8 @@ def deals_do_not_fit(plan: DealPlan, other_files: int, limit: int) -> str | None
     if total <= limit:
         return None
     return (
-        f"מבצעים לא פורסמו: {len(plan.files):,} קבצי מבצעים יחד עם שאר הקבצים ({other_files:,}) "
+        f"מבצעים לא פורסמו: {len(plan.files):,} קבצי מבצעים ({plan.deals:,} מבצעים) יחד עם שאר "
+        f"הקבצים ({other_files:,}) "
         f"הם {total:,}, מעל המגבלה ({limit:,}; האתר מקבל עד 20,000). המחירים פורסמו כרגיל, "
         "ללא מבצעים. צריך להחליט איך לצמצם את קבצי המבצעים (SITE-DATA.md, סעיף "
         '"How many files").\n'
@@ -344,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
             "search_files": len(index_files),
             "search_bytes": sum(index_sizes),
             "search_largest_bytes": max(index_sizes, default=0),
+            "deals": plan.deals,
             "deal_files": len(deal_files),
             "deal_bytes": sum(f.stat().st_size for f in deal_files),
             "deal_largest_bytes": max((f.stat().st_size for f in deal_files), default=0),

@@ -38,6 +38,9 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # to count today's daily runs (at most three do real work in a day)
     outputs:
       run: ${{ steps.gate.outputs.run }}
     steps:
@@ -50,11 +53,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$RELEASE" --pattern meta.json --clobber || echo "no meta.json yet"
+      - name: Today's daily runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list --workflow daily.yml --limit 100 \
+            --json databaseId,status,createdAt,startedAt,updatedAt > runs.json || echo '[]' > runs.json
       - name: Is it time?
         id: gate
         env:
           EVENT: ${{ github.event_name }}
-        run: python -m collector.daily gate --event "$EVENT" --meta meta.json | tee -a "$GITHUB_OUTPUT"
+          RUN_ID: ${{ github.run_id }}
+        run: python -m collector.daily gate --event "$EVENT" --meta meta.json --runs runs.json --current-run "$RUN_ID" | tee -a "$GITHUB_OUTPUT"
 
   collect:
     needs: gate

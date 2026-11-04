@@ -33,6 +33,12 @@ from zoneinfo import ZoneInfo
 ISRAEL = ZoneInfo("Asia/Jerusalem")
 RUN_HOURS = (6, 7, 8)  # Israel clock hours in which a scheduled run may start (8: a late retry)
 CATCH_UP_HOURS = range(7, 23)  # when the freshness check may start a missed daily run
+# The chains' servers are not ours. A run that really works (collects and builds) is counted, and
+# once three have worked in one Israeli day (the morning one and two more) no scheduled attempt and
+# no catch-up starts another: an issue says so instead.
+MAX_WORKING_RUNS_PER_DAY = 3
+WORKING_SECONDS = 120  # a run that only passed the gate lasts seconds; a working one minutes
+CATCH_UP_PAUSE = timedelta(hours=2)  # no catch-up within this time of any daily run
 HOURLY_HOURS = range(7, 24)  # Israel clock hours of the hourly update (07:00 to 23:59)
 MAX_AGE = timedelta(hours=36)
 
@@ -50,8 +56,36 @@ def read_meta(path: Path) -> dict | None:
         return None
 
 
+def working_runs_today(runs: list[dict], now: datetime, exclude_id: int | None = None) -> int:
+    """How many daily runs started today (Israeli day) did real work: still going, or lasting
+    more than two minutes (a run that only passed the gate lasts seconds). `runs` is the list
+    `gh run list --json databaseId,status,createdAt,startedAt,updatedAt` gives."""
+    today = now.astimezone(ISRAEL).date()
+    count = 0
+    for run in runs:
+        if exclude_id is not None and run.get("databaseId") == exclude_id:
+            continue
+        if parse_time(run["createdAt"]).astimezone(ISRAEL).date() != today:
+            continue
+        if run.get("status") != "completed":
+            count += 1
+            continue
+        try:
+            lasted = parse_time(run["updatedAt"]) - parse_time(run["startedAt"])
+        except (KeyError, ValueError):
+            continue
+        if lasted.total_seconds() > WORKING_SECONDS:
+            count += 1
+    return count
+
+
 def should_run(
-    event: str, now: datetime, last_updated: datetime | None, hours=RUN_HOURS
+    event: str,
+    now: datetime,
+    last_updated: datetime | None,
+    hours=RUN_HOURS,
+    runs: list[dict] | None = None,
+    current_run: int | None = None,
 ) -> tuple[bool, str]:
     if event != "schedule":
         return True, f"started by hand ({event or 'no event'})"
@@ -60,7 +94,28 @@ def should_run(
         return False, f"{local:%H:%M} in Israel: not the morning run"
     if last_updated and last_updated.astimezone(ISRAEL).date() == local.date():
         return False, f"already updated today ({last_updated.astimezone(ISRAEL):%H:%M})"
+    if runs is not None and working_runs_today(runs, now, current_run) >= MAX_WORKING_RUNS_PER_DAY:
+        return False, f"{MAX_WORKING_RUNS_PER_DAY} runs already worked today: no more tries"
     return True, f"{local:%H:%M} in Israel and not yet updated today"
+
+
+def should_catch_up(
+    now: datetime, last_updated: datetime | None, runs: list[dict]
+) -> tuple[bool, str, bool]:
+    """(start the daily run?, why, the daily limit is what stopped it). The freshness check asks
+    this every hour from 07:00 to 22:59 in Israel."""
+    go, reason = should_run("schedule", now, last_updated, CATCH_UP_HOURS)
+    if not go:
+        return False, reason, False
+    if any(run.get("status") != "completed" for run in runs):
+        return False, "a daily run is waiting or running", False
+    if runs:
+        latest = max(parse_time(run["createdAt"]) for run in runs)
+        if now - latest < CATCH_UP_PAUSE:
+            return False, "a daily run started in the last two hours", False
+    if working_runs_today(runs, now) >= MAX_WORKING_RUNS_PER_DAY:
+        return False, f"{MAX_WORKING_RUNS_PER_DAY} runs already worked today", True
+    return True, "nothing was published today", False
 
 
 def should_run_hourly(event: str, now: datetime, meta: dict | None) -> tuple[bool, str]:
@@ -79,6 +134,17 @@ def should_run_hourly(event: str, now: datetime, meta: dict | None) -> tuple[boo
     if full is None or full.date() != local.date():
         return False, "today's full update has not been published yet"
     return True, f"{local:%H:%M} in Israel, after today's full update ({full:%H:%M})"
+
+
+def read_runs(path: Path | None) -> list[dict]:
+    """The recent daily runs (gh run list --json ...); none when the file is missing or broken."""
+    if path is None:
+        return []
+    try:
+        runs = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return runs if isinstance(runs, list) else []
 
 
 def chains_with_data(data: Path) -> list[str]:
@@ -205,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.choices["gate"].add_argument("--event", default="")
     sub.choices["gate"].add_argument("--meta", type=Path, default=Path("meta.json"))
     sub.choices["catch-up"].add_argument("--meta", type=Path, default=Path("meta.json"))
+    sub.choices["catch-up"].add_argument("--runs", type=Path, help="gh run list --json ... file")
+    sub.choices["gate"].add_argument("--runs", type=Path, help="gh run list --json ... file")
+    sub.choices["gate"].add_argument("--current-run", type=int, help="this run (not counted)")
     sub.choices["hourly-gate"].add_argument("--event", default="")
     sub.choices["hourly-gate"].add_argument("--meta", type=Path, default=Path("meta.json"))
     sub.choices["chains"].add_argument("--data", type=Path, default=Path("data"))
@@ -226,15 +295,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "gate":
         meta = read_meta(args.meta)
         last = parse_time(meta["updated_at"]) if meta and "updated_at" in meta else None
-        go, reason = should_run(args.event, now, last)
+        runs = read_runs(args.runs) if args.runs else None
+        go, reason = should_run(args.event, now, last, runs=runs, current_run=args.current_run)
         print(f"run={'true' if go else 'false'}")
         print(f"reason={reason}", file=sys.stderr)
         return 0
     if args.command == "catch-up":
         meta = read_meta(args.meta)
         last = parse_time(meta["updated_at"]) if meta and "updated_at" in meta else None
-        go, reason = should_run("schedule", now, last, CATCH_UP_HOURS)
+        go, reason, limited = should_catch_up(now, last, read_runs(args.runs))
         print(f"run={'true' if go else 'false'}")
+        print(f"limit={'true' if limited else 'false'}")
         print(f"reason={reason}", file=sys.stderr)
         return 0
     if args.command == "hourly-gate":
