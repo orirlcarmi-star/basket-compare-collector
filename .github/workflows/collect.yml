@@ -30,6 +30,13 @@ jobs:
           CHAIN: ${{ inputs.chain }}
           LIMIT: ${{ inputs.limit }}
         run: python -m collector.collect "$CHAIN" --out data ${LIMIT:+--limit "$LIMIT"}
+      - name: Check the length of the item names in the chain's own file
+        # One more price file, nothing saved: are the names cut by the chain or by us?
+        if: inputs.chain != 'shufersal'
+        continue-on-error: true
+        env:
+          CHAIN: ${{ inputs.chain }}
+        run: python -m collector.namecheck "$CHAIN" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Keep the stores list
         uses: actions/upload-artifact@v4
         with:
