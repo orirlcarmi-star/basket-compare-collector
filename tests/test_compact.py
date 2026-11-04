@@ -233,9 +233,7 @@ def test_search_files_of_a_published_site_carry_the_facets(two_chains, monkeypat
     assert stats["search_facets_growth_percent"] > 0
 
 
-def test_facets_over_the_growth_limit_are_left_out_with_a_warning(
-    two_chains, capsys, monkeypatch
-):
+def test_facets_over_the_growth_limit_are_left_out_with_a_warning(two_chains, capsys, monkeypatch):
     """The product owner's rule: more than the limit bigger and they are not written. These
     invented names are short, so with a low limit the records keep their old shape."""
     from collector.searchindex import search_records
