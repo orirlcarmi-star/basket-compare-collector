@@ -2,14 +2,22 @@
 
 The website cannot download every product name to search them, so the names are indexed:
 
-  s/<file>.json   {"p": [[barcode, name, category?], ...], "w": {word: [position, ...], ...}}
+  s/<file>.json   {"p": [[barcode, name, category?, facets?], ...], "w": {word: [position, ...]}}
 
 `w` holds the words that begin with the same two letters; each word lists the positions, in `p`,
 of the products that contain it. `p` holds those products: barcode, the short name the
-shopper sees, and the category id (left out when the product has none). So one request per
+shopper sees, the category id (left out when the product has none) and, when there is
+something to say, the facets (see below). So one request per
 word of the query is enough to show results: no product files are read until the shopper adds
 something to the basket. (A product with several words is in several files; the name is
 repeated, which is what makes the index about four times bigger than one with barcodes only.)
+
+Facets are an addition at the END of the record, for the website's narrowing buttons, so a
+search does not have to read product files: `{"f": fat percent, "z": [amount, "l"|"kg"|"unit"],
+"w": true}` — exactly the values the product file already carries as a.f, z and w, and only the
+ones that exist (a product with none has no fourth place). The first three places never move
+and never change meaning: a reader that knows only [barcode, name, category] keeps working. When
+a product has facets but no category, the category place holds "" (an empty string).
 
 The file name is the two letters as four hex digits of each ("חל" -> "05d705dc"), so any letter
 is safe in a URL. Words and queries are written in the normal form of `collector.textnorm`
@@ -58,9 +66,33 @@ def stems(word: str, vocabulary: set[str]) -> list[str]:
     return []
 
 
-def build_index(products: Mapping[str, tuple[str, str | None]]) -> dict[str, dict]:
-    """barcode -> (name, category id or None)  ->  {file name: {"p": [...], "w": {...}}}."""
-    searchable = {code: words(name) for code, (name, _) in products.items()}
+def facets_of(product: Mapping) -> dict:
+    """What the product file already says, for the narrowing buttons: fat percent (a.f), the
+    package contents (z) and "sold by weight" (w). Only what exists; {} when nothing does."""
+    found: dict = {}
+    fat = (product.get("a") or {}).get("f")
+    if fat:
+        found["f"] = fat
+    if product.get("z"):
+        found["z"] = product["z"]
+    if product.get("w"):
+        found["w"] = True
+    return found
+
+
+def _record(code: str, entry: tuple) -> list:
+    """One entry of "p": [barcode, name, category?, facets?]. The first three places keep their
+    place and meaning; facets only ever come after them."""
+    name, category = entry[0], entry[1]
+    facets = entry[2] if len(entry) > 2 else None
+    if facets:
+        return [code, name, category or "", facets]
+    return [code, name, category] if category else [code, name]
+
+
+def build_index(products: Mapping[str, tuple]) -> dict[str, dict]:
+    """barcode -> (name, category id or None[, facets]) -> {file name: {"p": [...], "w": {...}}}."""
+    searchable = {code: words(entry[0]) for code, entry in products.items()}
     vocabulary = {w for ws in searchable.values() for w in ws}
     postings: dict[str, set[str]] = {}
     for code, ws in searchable.items():
@@ -78,11 +110,18 @@ def build_index(products: Mapping[str, tuple[str, str | None]]) -> dict[str, dic
         for code in sorted(postings[word]):
             if code not in place:
                 place[code] = len(content["p"])
-                text, category = products[code]
-                content["p"].append([code, text, category] if category else [code, text])
+                content["p"].append(_record(code, products[code]))
             entry.append(place[code])
         content["w"][word] = entry
     return files
+
+
+def index_size(index: Mapping[str, Mapping]) -> int:
+    """Bytes the index files would take (what write_index writes)."""
+    return sum(
+        len(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        for content in index.values()
+    )
 
 
 def write_index(index: Mapping[str, Mapping], folder: Path) -> list[Path]:
@@ -93,6 +132,25 @@ def write_index(index: Mapping[str, Mapping], folder: Path) -> list[Path]:
         path.write_text(json.dumps(content, ensure_ascii=False, separators=(",", ":")), "utf-8")
         written.append(path)
     return written
+
+
+def search_records(folder: Path, query: str) -> dict[str, list] | None:
+    """barcode -> its whole record ([barcode, name, category?, facets?]) for every product having
+    all the words of the query (None: nothing to search for)."""
+    found: dict[str, list] | None = None
+    for word in words(query):
+        path = folder / file_name(word)
+        content = (
+            json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"p": [], "w": {}}
+        )
+        matches = {
+            content["p"][i][0]: content["p"][i]
+            for w, places in content["w"].items()
+            if w.startswith(word)
+            for i in places
+        }
+        found = matches if found is None else {c: v for c, v in found.items() if c in matches}
+    return found
 
 
 def search(folder: Path, query: str) -> dict[str, tuple[str, str | None]] | None:

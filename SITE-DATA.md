@@ -29,9 +29,9 @@ Every morning the pipeline replaces the files of the release **`site-data-latest
   cleaning, hygiene, baby, home and **pets (חיות מחמד, new)**. A product with no `k` is "לא מסווג". A product is left
   without a category when no rule is sure; make-up, nail and lip products are deliberately never given one.
 * `s/<file>.json` — the search index, split by the first two letters of each word:
-  `{"p": [[barcode, name, category?], ...], "w": {word: [position, ...]}}`. `w` lists the words that begin with those two
-  letters, each with the positions (in `p`) of the products that contain it; `p` holds the barcode, **the name to show**
-  and the category id (left out when there is none). The file name is the two letters as 4 hex digits each. See
+  `{"p": [[barcode, name, category?, facets?], ...], "w": {word: [position, ...]}}`. `w` lists the words that begin with
+  those two letters, each with the positions (in `p`) of the products that contain it; `p` holds the barcode, **the name
+  to show**, the category id (left out when there is none) and, when there is something to say, the facets. The file name is the two letters as 4 hex digits each. See
   "Search" below.
 * `stats.json`, `meta.json` — counts for monitoring.
 
@@ -94,7 +94,8 @@ package the host would refuse is never published. The count is in `stats.json` (
 **What changed for the website:** the search files now carry the product name and category, so showing results needs
 **one request per word of the query** (usually 1 or 2) instead of one per result (~30). The product files (`p/`) are
 read only when something is added to the basket. Before, `s/<file>.json` was `{word: [barcode, ...]}`; now it is the
-object above. A barcode is `p[i][0]`, its name `p[i][1]`, its category id `p[i][2]` when present.
+object above. A barcode is `p[i][0]`, its name `p[i][1]`, its category id `p[i][2]` when present, and the facets
+`p[i][3]` when present.
 
 How to search (the reference is `collector.searchindex.search`):
 
@@ -158,3 +159,41 @@ of the units of the prices, and for a product sold by weight those units are kil
 
 **Effort:** small on our side (one more list in the products and the same deal file with a decimal `q`) and a short
 addition to the calculator on the website; no change to the files it reads today.
+
+### Facets in the search records (for the narrowing buttons)
+
+So that a search for a general word ("חלב") can build the narrowing buttons (fat percentage, size, "sold by weight")
+without reading up to 60 product files, a record may carry **facets** in a fourth place:
+
+```json
+["7290004131074", "חלב בקרטון 3% שומן 1 ל", "dairy", {"f": "3", "z": ["1", "l"]}]
+```
+
+- `f` fat percent, `z` what the package holds `[amount, "l" | "kg" | "unit"]`, `w` `true` when sold by weight. They are
+  exactly `a.f`, `z` and `w` of the product file, nothing is computed anew. **A value that does not exist is not
+  written**; a product with none of them has no fourth place at all.
+- **An addition only.** The first three places ([barcode, name, category]) never move and keep their meaning, so a site
+  that knows only those keeps working unchanged. One detail: when a product has facets but no category, the category
+  place holds `""` (an empty string), so the facets can keep their place. Treat `""` like "no category".
+- Fat percent, size and the "by weight" flag are all the facets there are. Brand and the "free of" labels (`a.b`, `a.d`)
+  are not copied.
+- `collector.searchindex.search_records` returns the whole record; the older `search` returns `(name, category)` as before.
+
+**Size.** The facets are a fixed few bytes per record, so the relative growth depends on how long the names are. Measured
+on invented catalogs of 59,446 products (67% with some facet): index 13.7 MB -> 16.5 MB (**+20%**, gzipped +7%), largest
+file 1.17 MB -> 1.48 MB (+27%) with names of about 30 characters; with names of 14-24 characters the growth is 32-39%
+(real chain names are about 24 characters long, so the real figure is near the limit). If every product had all three
+facets it would be +56%. The real size could not be measured here (no access to the chains' data).
+
+**The product owner's limit is +30%.** `publish` therefore measures the growth on the real data in every run (it builds the
+index both ways): up to 30% the facets are written; above it they are **left out**, the files stay exactly as before,
+and a warning is written to `stats.json` / `meta.json` (`search_facets`, `search_facets_growth_percent`, `warnings`) and
+to the daily issue.
+
+#### Options if the facets are too big
+1. *A shorter form* (smallest change for the site): one string instead of the object, e.g. `"3|1l|"` for fat 3, one litre,
+   not by weight. About half the bytes of the object, but the site parses a string.
+2. *Fewer facets*: keep `f` and `z` (the buttons that narrow most), drop `w` (it is nearly always implied by `z`).
+3. *Facets only in the files of general words*: the heavy two-letter files (the ones that serve "חלב", "גבינה", "שמן")
+   get them, the rest do not. Needs the site to cope with records of both kinds.
+4. *Accept the growth* and raise `MAX_FACET_GROWTH` in `publish.py`.
