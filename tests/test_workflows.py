@@ -14,12 +14,12 @@ def text(name):
 
 def test_daily_is_scheduled_off_the_round_hour_with_retries_in_both_seasons():
     crons = re.findall(r'cron: "([^"]+)"', text("daily.yml"))
-    assert crons == ["7,37 3,4 * * *", "7 5 * * *"]
+    assert crons == ["7,37 3-5 * * *"]
     # GitHub delays or drops runs at minute 0 (03:00 and 04:00 UTC of 2026-11-04 never started)
     for cron in crons:
         assert not cron.startswith("0 "), "do not schedule on the round hour"
     # 06:07 in Israel is 03:07 UTC in summer (UTC+3) and 04:07 UTC in winter (UTC+2)
-    assert "7,37 3,4" in crons[0]
+    assert "7,37 3-5" in crons[0]  # 03:07, 03:37 ... 05:37 UTC: six tries before the catch-up
 
 
 def test_daily_covers_every_chain_and_the_site_files_are_compact():
@@ -114,7 +114,10 @@ def test_the_hourly_cron_when_switched_on_covers_the_israeli_day_in_both_seasons
 def test_the_freshness_check_starts_a_missed_daily_run():
     freshness = text("freshness.yml")
     assert "actions: write" in freshness  # needed to start a workflow
-    assert re.search(r'cron: "23 5,7,9 \* \* \*"', freshness)  # mornings, off the round hour
+    assert re.search(
+        r'cron: "23 5-19 \* \* \*"', freshness
+    )  # every hour of the day, off the round hour
     assert "collector.daily catch-up" in freshness
     assert "gh workflow run daily.yml" in freshness
     assert "daily runs waiting or running" in freshness  # never piles a second run on a running one
+    assert "started in the last 2 hours" in freshness  # nor repeats a failing run every hour

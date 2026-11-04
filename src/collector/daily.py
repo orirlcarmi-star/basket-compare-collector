@@ -4,7 +4,7 @@ The workflows (.github/workflows/daily.yml, freshness.yml) only run commands; wh
 decide is here:
 
   hourly-gate  The same for the hourly update (07:00-23:59 in Israel, after today's full update).
-  catch-up Did the morning run not publish today? (07:00-12:59 in Israel: the freshness check
+  catch-up Did the morning run not publish today? (07:00-22:59 in Israel: the freshness check
            then starts the daily run itself.)
   gate     Is it time to run? The schedule fires at 03:00 and 04:00 UTC because Israel is
            UTC+3 in summer and UTC+2 in winter, and GitHub cannot schedule in a time zone.
@@ -32,7 +32,7 @@ from zoneinfo import ZoneInfo
 
 ISRAEL = ZoneInfo("Asia/Jerusalem")
 RUN_HOURS = (6, 7, 8)  # Israel clock hours in which a scheduled run may start (8: a late retry)
-CATCH_UP_HOURS = range(7, 13)  # when the freshness check may start a missed daily run
+CATCH_UP_HOURS = range(7, 23)  # when the freshness check may start a missed daily run
 HOURLY_HOURS = range(7, 24)  # Israel clock hours of the hourly update (07:00 to 23:59)
 MAX_AGE = timedelta(hours=36)
 

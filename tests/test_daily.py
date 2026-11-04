@@ -312,7 +312,9 @@ def test_scheduled_retries_of_the_morning_run(now, last, go):
         ("2026-11-04T07:23", "2026-11-04T04:10", False),  # published this morning
         ("2026-11-04T07:23", "2026-11-03T04:10", True),  # only yesterday's
         ("2026-11-04T03:23", None, False),  # 05:23: the daily run's own time has not come
-        ("2026-11-04T11:00", None, False),  # 13:00: too late for a catch-up
+        ("2026-11-04T11:00", None, True),  # 13:00: still catches up, prices must not stay old
+        ("2026-11-04T19:23", None, True),  # 21:23
+        ("2026-11-04T21:00", None, False),  # 23:00: the day is over
         ("2026-07-15T08:23", None, True),  # summer 11:23
     ],
 )
